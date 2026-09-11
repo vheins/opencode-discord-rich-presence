@@ -1,7 +1,7 @@
 # Configuration — opencode Discord Rich Presence
 
-> Source of truth: [`ARCHITECTURE.md §5`](./ARCHITECTURE.md#5-config-schema) (34 options).
-> Related: [`DISCORD-RPC.md`](./DISCORD-RPC.md) (wire/IPC), [`ARCHITECTURE.md §6`](./ARCHITECTURE.md#6-transport-abstraction) (transport).
+> Source of truth: [`ARCHITECTURE.md §5`](./ARCHITECTURE.md#5-config-schema) (45 options).
+> Related: [`DISCORD-RPC.md`](./DISCORD-RPC.md) (wire/IPC), [`ARCHITECTURE.md §6`](./ARCHITECTURE.md#6-transport-abstraction) (transport), [`PRESENCE-DESIGN.md`](./PRESENCE-DESIGN.md) (presence-engine vision).
 
 ---
 
@@ -10,7 +10,7 @@
 1. [Quick start](#1-quick-start)
 2. [Precedence & resolution](#2-precedence--resolution)
 3. [Feature sections](#3-feature-sections)
-4. [Full reference (all 34 options)](#4-full-reference-all-34-options)
+4. [Full reference (all 45 options)](#4-full-reference-all-45-options)
 5. [Option details by group](#5-option-details-by-group)
 6. [Example configs](#6-example-configs)
 7. [Validation & troubleshooting](#7-validation--troubleshooting)
@@ -171,9 +171,54 @@ Asset slot empty on miss — rest of presence still displays.
 
 Only the picked session pushes `SET_ACTIVITY` (single Discord IPC slot).
 
+### 3f. Presence engine
+
+The engine turns opencode events into a Discord activity. The **Tool Activity Resolver** maps the active tool to human-readable text — generic labels (`Thinking`, `Working`) are forbidden. Three sources normalize to one model:
+
+| Source | Example | Normalized |
+|---|---|---|
+| Builtin | `read`, `edit`, `write`, `bash`, `grep`, `glob`, `lsp`, `patch`, `todo`, `task` | `Reading auth.service.ts` |
+| Custom | user-defined or plugin tool | tool name + action |
+| MCP (first-class) | `mcp__github__search_code` | `GitHub • Searching repository` |
+
+The unified `ToolActivity` model is `{ source, provider?, tool, action, target?, phrase }`.
+
+MCP is parsed generically as `mcp__<provider>__<tool>`; unknown providers/tools fall back to `MCP • Running <tool> • <phrase>` — no engine change per server. Rendering is `<Activity> • <Phrase>`; phrases come from `phrases.details`/`phrases.state` (non-empty overrides the matching `*Template`; template vars such as `{project}` are expanded), selected per `phrases.mode`, rotated per `phrases.rotateMs`, and gated by `phrases.cooldownMs`.
+
+**Telemetry** — context `150.4K (57%)` (`presence.showContext`) and TODO `TODO 4/9` (`presence.showTodo`) both merge into `state`, because Discord renders only two text lines (`details` + `state`) — `PRESENCE-DESIGN.md` §16.2. `presence.showSessionTitle` puts the session title in `details`; `presence.showMcpProvider` keeps the provider name on MCP activities. **Event priority**: `ERROR > PERMISSION > MCP/TOOL > FILE > THINKING > IDLE`. `activityType` defaults to `playing`; `listening` is the Spotify-like option (RPC `type` 2).
+
+### 3g. Vision-key reconciliation
+
+`PRESENCE-DESIGN.md §15` uses vision JSON keys. Canonical option names (new options included) are:
+
+| Vision key | Canonical option | Status |
+|---|---|---|
+| `identity.name` | `activityName` | new — best-effort (`PRESENCE-DESIGN.md` §16.1) |
+| `identity.type` | `activityType` | new — `Playing` → `playing` |
+| `identity.largeImage` / `largeText` | `largeImageKey` / `largeImageText` | existing (reconciled) |
+| `presence.showSessionTitle` / `showContext` / `showTodo` / `showMcpProvider` | same name | new |
+| `presence.showTimestamp` | `sessionStats.showElapsed` | existing (reconciled) |
+| `presence.showModel` | `sessionStats.showModel` | existing |
+| `presence.showAgent` | `smallImageText` tooltip | existing (metadata — `PRESENCE-DESIGN.md` §10) |
+| `presence.showProject` | `{project}` in templates + `privacy.hideProjectPath` | existing |
+| `presence.randomPhrases` | non-empty `phrases.details` / `phrases.state` | new |
+| `behavior.updateDebounceMs` | `throttle.debounceMs` | existing (reconciled) |
+| `behavior.idleTimeoutMs` | `idle.timeoutMs` | existing (reconciled) |
+| `behavior.phraseCooldownMs` | `phrases.cooldownMs` | new |
+
+**Spotify-style recipe** (`activityType: "listening"` + optional `activityName` + `phrases.details` using `{project}`):
+
+```json
+{ "activityType": "listening", "activityName": "Spotify",
+  "phrases": { "details": ["{project}"], "state": ["Deep focus", "In the zone", "Shipping code"],
+    "mode": "random", "rotateMs": 30000, "cooldownMs": 5000 } }
+```
+
+The top line renders `Listening to <AppName>`; `activityName` is best-effort (`PRESENCE-DESIGN.md` §16.1).
+
 ---
 
-## 4. Full reference (all 34 options)
+## 4. Full reference (all 45 options)
 
 | # | Option | Type | Default | Env var | Description |
 |---|---|---|---|---|---|
@@ -186,33 +231,44 @@ Only the picked session pushes `SET_ACTIVITY` (single Discord IPC slot).
 | 7 | `smallImageText` | `string \| undefined` | `undefined` | `DISCORD_SMALL_IMAGE_TEXT` | Hover text for small image. |
 | 8 | `detailsTemplate` | `string` | `"Working with {model}"` | — | `details` template. Vars: `{model}` `{provider}` `{project}` `{file}` `{elapsed}`. |
 | 9 | `stateTemplate` | `string` | `"{cost} · {tokens} tokens"` | — | `state` template. Same vars + `{done}` `{total}` `{contextPercent}`. |
-| 10 | `privacy.hideProjectPath` | `boolean` | `false` | `OPENCODE_DISCORD_HIDE_PROJECT` | Omit project/directory from `details`. |
-| 11 | `privacy.hideModel` | `boolean` | `false` | `OPENCODE_DISCORD_HIDE_MODEL` | Omit model; `details` → `"Working"`. |
-| 12 | `privacy.hideCost` | `boolean` | `false` | `OPENCODE_DISCORD_HIDE_COST` | Omit cost from `state`. |
-| 13 | `privacy.hideFilePaths` | `boolean` | `true` | `OPENCODE_DISCORD_HIDE_FILES` | Default on — no file names in presence. |
-| 14 | `idle.enabled` | `boolean` | `true` | — | Idle shows distinct text vs last `active`. |
-| 15 | `idle.timeoutMs` | `number` | `300000` (5 min) | `OPENCODE_DISCORD_IDLE_TIMEOUT` | Force `idle` after no activity. Clamped 10 s..1 h. |
-| 16 | `idle.details` | `string` | `"Idle — ready"` | — | `details` when `idle`. |
-| 17 | `idle.state` | `string` | `"{cost} · {tokens} tokens"` | — | `state` when `idle`. |
-| 18 | `reconnect.enabled` | `boolean` | `true` | — | Auto-reconnect on IPC drop. |
-| 19 | `reconnect.baseMs` | `number` | `1000` | — | First retry delay. |
-| 20 | `reconnect.capMs` | `number` | `30000` | — | Max backoff. |
-| 21 | `reconnect.maxAttempts` | `number` | `10` | `OPENCODE_DISCORD_MAX_RETRIES` | → `closed` after this many failures. |
-| 22 | `reconnect.jitterRatio` | `number` | `0.2` | — | ±20% jitter. |
-| 23 | `reconnect.handshakeTimeoutMs` | `number` | `10000` | — | Await `READY` timeout. |
-| 24 | `throttle.debounceMs` | `number` | `100` | — | Coalesce window before `SET_ACTIVITY`. |
-| 25 | `throttle.minIntervalMs` | `number` | `4000` | — | Min gap between sends (5/20 s → 4 s). |
-| 26 | `assets.validate` | `boolean` | `true` | — | Validate `type ∈ {0,2,3,5}`, buttons ≤2, key/URL. |
-| 27 | `buttons` | `Array<{label,url}>` | `[{label:"View on GitHub",url:"https://github.com/vheins/opencode-discord-rich-presence"}]` | — | Max 2. Label 1..32, url 1..512 `https://`. `[]` = none. |
-| 28 | `multiSession.strategy` | `"leader-election" \| "last-wins"` | `"leader-election"` | — | Display pick when multiple instances run. |
-| 29 | `sessionStats.showModel` | `boolean` | `true` | — | Include model (respects `hideModel`). |
-| 30 | `sessionStats.showTokens` | `boolean` | `true` | — | Include token counts. |
-| 31 | `sessionStats.showCost` | `boolean` | `true` | — | Include cost (respects `hideCost`). |
-| 32 | `sessionStats.showElapsed` | `boolean` | `true` | — | Include `timestamps.start` timer. |
-| 33 | `perProject.enabled` | `boolean` | `true` | — | Look for project-level file. |
-| 34 | `perProject.filename` | `string` | `".discord-presence.json"` | — | Filename in `project.directory` / `worktree`. |
+| 10 | `activityType` | `"playing" \| "listening" \| "watching" \| "competing"` | `"playing"` | `OPENCODE_DISCORD_ACTIVITY_TYPE` | Activity `type` → RPC `0/2/3/5`. `1`/`4` invalid. `listening` = Spotify-like. |
+| 11 | `activityName` | `string \| undefined` | `undefined` | `OPENCODE_DISCORD_ACTIVITY_NAME` | Activity `name` override, best-effort (`PRESENCE-DESIGN.md` §16.1). ≤128. |
+| 12 | `phrases.details` | `string[]` | `[]` | — | `details` pool; non-empty overrides `detailsTemplate`. Template vars allowed. |
+| 13 | `phrases.state` | `string[]` | `[]` | — | `state` pool; non-empty overrides `stateTemplate`. Template vars allowed. |
+| 14 | `phrases.mode` | `"random" \| "sequential"` | `"random"` | — | Pool selection order. |
+| 15 | `phrases.rotateMs` | `number` | `0` | `OPENCODE_DISCORD_ROTATE_MS` | `0` = once per transition; `>0` rotates (clamped 5000..3600000), timer `.unref()`. |
+| 16 | `phrases.cooldownMs` | `number` | `5000` | — | Min gap before a new phrase (`PRESENCE-DESIGN.md` §15). |
+| 17 | `privacy.hideProjectPath` | `boolean` | `false` | `OPENCODE_DISCORD_HIDE_PROJECT` | Omit project/directory from `details`. |
+| 18 | `privacy.hideModel` | `boolean` | `false` | `OPENCODE_DISCORD_HIDE_MODEL` | Omit model; `details` → `"Working"`. |
+| 19 | `privacy.hideCost` | `boolean` | `false` | `OPENCODE_DISCORD_HIDE_COST` | Omit cost from `state`. |
+| 20 | `privacy.hideFilePaths` | `boolean` | `true` | `OPENCODE_DISCORD_HIDE_FILES` | Default on — no file names in presence. |
+| 21 | `idle.enabled` | `boolean` | `true` | — | Idle shows distinct text vs last `active`. |
+| 22 | `idle.timeoutMs` | `number` | `300000` (5 min) | `OPENCODE_DISCORD_IDLE_TIMEOUT` | Force `idle` after no activity. Clamped 10 s..1 h. |
+| 23 | `idle.details` | `string` | `"Idle — ready"` | — | `details` when `idle`. |
+| 24 | `idle.state` | `string` | `"{cost} · {tokens} tokens"` | — | `state` when `idle`. |
+| 25 | `reconnect.enabled` | `boolean` | `true` | — | Auto-reconnect on IPC drop. |
+| 26 | `reconnect.baseMs` | `number` | `1000` | — | First retry delay. |
+| 27 | `reconnect.capMs` | `number` | `30000` | — | Max backoff. |
+| 28 | `reconnect.maxAttempts` | `number` | `10` | `OPENCODE_DISCORD_MAX_RETRIES` | → `closed` after this many failures. |
+| 29 | `reconnect.jitterRatio` | `number` | `0.2` | — | ±20% jitter. |
+| 30 | `reconnect.handshakeTimeoutMs` | `number` | `10000` | — | Await `READY` timeout. |
+| 31 | `throttle.debounceMs` | `number` | `100` | — | Coalesce window before `SET_ACTIVITY`. |
+| 32 | `throttle.minIntervalMs` | `number` | `4000` | — | Min gap between sends (5/20 s → 4 s). |
+| 33 | `assets.validate` | `boolean` | `true` | — | Validate `type ∈ {0,2,3,5}`, buttons ≤2, key/URL. |
+| 34 | `buttons` | `Array<{label,url}>` | `[{label:"View on GitHub",url:"https://github.com/vheins/opencode-discord-rich-presence"}]` | — | Max 2. Label 1..32, url 1..512 `https://`. `[]` = none. |
+| 35 | `multiSession.strategy` | `"leader-election" \| "last-wins"` | `"leader-election"` | — | Display pick when multiple instances run. |
+| 36 | `sessionStats.showModel` | `boolean` | `true` | — | Include model (respects `hideModel`). |
+| 37 | `sessionStats.showTokens` | `boolean` | `true` | — | Include token counts. |
+| 38 | `sessionStats.showCost` | `boolean` | `true` | — | Include cost (respects `hideCost`). |
+| 39 | `sessionStats.showElapsed` | `boolean` | `true` | — | Include `timestamps.start` timer. |
+| 40 | `presence.showTodo` | `boolean` | `true` | — | Append `TODO 4/9` to `state` (`PRESENCE-DESIGN.md` §9). |
+| 41 | `presence.showContext` | `boolean` | `true` | — | Append `150.4K (57%)` to `state` (`PRESENCE-DESIGN.md` §8). |
+| 42 | `presence.showSessionTitle` | `boolean` | `true` | — | Use the session title as `details`. |
+| 43 | `presence.showMcpProvider` | `boolean` | `true` | — | Show the MCP provider name on MCP activities. |
+| 44 | `perProject.enabled` | `boolean` | `true` | — | Look for project-level file. |
+| 45 | `perProject.filename` | `string` | `".discord-presence.json"` | — | Filename in `project.directory` / `worktree`. |
 
-Every row traces to `ARCHITECTURE.md §5.1`. Count = **34**.
+Every row traces to `ARCHITECTURE.md §5.1`. Count = **45**.
 
 ---
 
@@ -294,6 +350,16 @@ debounce/throttle queue. See `ARCHITECTURE.md §6.2–6.3`.
 | `sessionStats.*` | Toggle model/tokens/cost/elapsed independently (privacy still wins). | `{ "sessionStats": { "showCost": false } }` |
 | `perProject.*` | `enabled:false` ignores project file entirely; `filename` customises lookup. | `{ "perProject": { "filename": ".presence.json" } }` |
 
+### `activityType` / `activityName` / `phrases.*` / `presence.*`
+
+| Option | Effect | Example |
+|---|---|---|
+| `activityType` | RPC activity verb. `playing`→0 (default), `listening`→2 (Spotify-like), `watching`→3, `competing`→5. `1`/`4` are rejected by `assets.validate`. | `{ "activityType": "listening" }` |
+| `activityName` | Best-effort Activity `name` override (≤128). Discord renders `<Verb> <AppName>` where `AppName` is the registered app name — `PRESENCE-DESIGN.md` §16.1. | `{ "activityName": "Spotify" }` |
+| `phrases.details` / `phrases.state` | Non-empty pool replaces the matching `*Template` for that line; entries may use template vars (`{project}`, `{model}`, …). | `{ "phrases": { "state": ["Deep focus"] } }` |
+| `phrases.mode` / `phrases.rotateMs` / `phrases.cooldownMs` | Pool order; `0` = once per transition, `>0` rotates (clamped 5000..3600000, `.unref()`); cooldown is the min gap before a new phrase. | `{ "phrases": { "mode": "sequential", "rotateMs": 30000 } }` |
+| `presence.show*` | `showTodo`/`showContext` append `TODO 4/9` / `150.4K (57%)` to `state`; `showSessionTitle` sets `details`; `showMcpProvider` keeps the MCP provider name. | `{ "presence": { "showTodo": false } }` |
+
 ---
 
 ## 6. Example configs
@@ -325,6 +391,9 @@ All examples are copy-pasteable and validate against `src/config/schema.ts`.
   "smallImageText": "Editing",
   "detailsTemplate": "Working with {model} on {project}",
   "stateTemplate": "{cost} · {tokens} tokens · {elapsed}",
+  "activityType": "playing",
+  "activityName": "opencode",
+  "phrases": { "details": [], "state": [], "mode": "random", "rotateMs": 0, "cooldownMs": 5000 },
   "privacy": {
     "hideProjectPath": false,
     "hideModel": false,
@@ -352,9 +421,7 @@ All examples are copy-pasteable and validate against `src/config/schema.ts`.
   "assets": {
     "validate": true
   },
-  "buttons": [
-    { "label": "View on GitHub", "url": "https://github.com/vheins/opencode-discord-rich-presence" }
-  ],
+  "buttons": [{ "label": "View on GitHub", "url": "https://github.com/vheins/opencode-discord-rich-presence" }],
   "multiSession": {
     "strategy": "leader-election"
   },
@@ -364,6 +431,7 @@ All examples are copy-pasteable and validate against `src/config/schema.ts`.
     "showCost": true,
     "showElapsed": true
   },
+  "presence": { "showTodo": true, "showContext": true, "showSessionTitle": true, "showMcpProvider": true },
   "perProject": {
     "enabled": true,
     "filename": ".discord-presence.json"
@@ -428,4 +496,4 @@ OPENCODE_DISCORD_DEBUG=1 opencode  # verbose logs
 
 ---
 
-*34 options. Schema: `src/config/schema.ts`. Loader: `src/config/loader.ts`. Presence rendering: `src/core/presence-model.ts` + `src/utils/format.ts`. Transport: `src/discord/client.ts` + `src/discord/transport.ts` + `src/discord/ipc.ts`.*
+*45 options. Schema: `src/config/schema.ts`. Loader: `src/config/loader.ts`. Presence rendering: `src/core/presence-model.ts` + `src/utils/format.ts`. Transport: `src/discord/client.ts` + `src/discord/transport.ts` + `src/discord/ipc.ts`.*

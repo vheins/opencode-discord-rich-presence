@@ -1,7 +1,7 @@
 # Architecture — opencode Discord Rich Presence
 
 > Parent: `ROOT-001` · Depends on: `DISC-002` · Consumed by: `SCAF-001..003`, `DOC-002`.
-> Sources: [`OPENCODE-PLUGIN-API.md`](./OPENCODE-PLUGIN-API.md) (pin `193de13a`), [`DISCORD-RPC.md`](./DISCORD-RPC.md), [`_research/community-plugins.md`](./_research/community-plugins.md).
+> Sources: [`OPENCODE-PLUGIN-API.md`](./OPENCODE-PLUGIN-API.md) (pin `193de13a`), [`DISCORD-RPC.md`](./DISCORD-RPC.md), [`PRESENCE-DESIGN.md`](./PRESENCE-DESIGN.md) (presence-engine vision), [`_research/community-plugins.md`](./_research/community-plugins.md).
 
 ---
 
@@ -87,6 +87,9 @@ export type ResolvedConfig = {
   enabled: boolean; debug: boolean; applicationId: string;
   largeImageKey: string; largeImageText: string; smallImageKey?: string; smallImageText?: string;
   detailsTemplate: string; stateTemplate: string;
+  activityType: "playing" | "listening" | "watching" | "competing"; activityName?: string;
+  phrases: { details: string[]; state: string[]; mode: "random" | "sequential"; rotateMs: number; cooldownMs: number };
+  presence: { showTodo: boolean; showContext: boolean; showSessionTitle: boolean; showMcpProvider: boolean };
   privacy: { hideProjectPath: boolean; hideModel: boolean; hideCost: boolean; hideFilePaths: boolean };
   idle: { enabled: boolean; timeoutMs: number; details: string; state: string };
   reconnect: { enabled: boolean; baseMs: number; capMs: number; maxAttempts: number; jitterRatio: number; handshakeTimeoutMs: number };
@@ -292,6 +295,10 @@ const TRANSITIONS: Transition[] = [
 
 All states share `largeImageKey/Text` + `buttons` from config. Caps: `details`/`state`/`large_text`/`small_text` ≤ 128, keys ≤ 32 (`discord_rpc.h` historical, stay within — `DISCORD-RPC.md` §4.2). Buttons: max 2, label 1..32 / url 1..512 / `https://` only.
 
+### 4.4 Tool activity resolution
+
+`state` derives from the **currently active tool** via the Tool Activity Resolver (`core/tool-resolver.ts`); generic labels (`Thinking`, `Working`) are forbidden. Sources: **builtin** (`read`/`edit`/`write`/`bash`/`grep`/`glob`/`lsp`/`patch`/`todo`/`task`), **custom** (user/plugin tools), and **MCP** (first-class). All normalize to `ToolActivity { source, provider?, tool, action, target?, phrase }` and render as `<Activity> • <Phrase>`. MCP is parsed generically from `mcp__<provider>__<tool>`; unknown providers/tools fall back to `MCP • Running <tool> • <phrase>` with no engine change. Phrases come from `phrases.details`/`phrases.state` (non-empty overrides the matching `*Template`; template vars such as `{project}` are expanded), selected per `phrases.mode`, rotated per `phrases.rotateMs`, and gated by `phrases.cooldownMs`. Telemetry (context `150.4K (57%)` + `TODO 4/9`) merges into `state` because Discord renders only two text lines. Event priority: `ERROR > PERMISSION > MCP/TOOL > FILE > THINKING > IDLE`. Full model + verified Discord constraints: [`PRESENCE-DESIGN.md`](./PRESENCE-DESIGN.md) §§5–12, §16.
+
 ---
 
 ## 5. Config schema
@@ -320,6 +327,13 @@ Deep merge: objects merge, arrays **replace** (so `buttons` from higher preceden
 | `smallImageText` | `string \| undef` | `undefined` | `DISCORD_SMALL_IMAGE_TEXT` | Hover text for small image. |
 | `detailsTemplate` | `string` | `"Working with {model}"` | — | `details` template. Vars: `{model}` `{provider}` `{project}` `{file}` `{elapsed}`. |
 | `stateTemplate` | `string` | `"{cost} · {tokens} tokens"` | — | `state` template. Same vars + `{done}` `{total}` `{contextPercent}`. |
+| `activityType` | `"playing" \| "listening" \| "watching" \| "competing"` | `"playing"` | `OPENCODE_DISCORD_ACTIVITY_TYPE` | Activity `type` → RPC `0/2/3/5`. `1`/`4` invalid. `listening` = Spotify-like. |
+| `activityName` | `string \| undefined` | `undefined` | `OPENCODE_DISCORD_ACTIVITY_NAME` | Activity `name` override, best-effort (`PRESENCE-DESIGN.md` §16.1). ≤128. |
+| `phrases.details` | `string[]` | `[]` | — | `details` pool; non-empty overrides `detailsTemplate`. Template vars allowed. |
+| `phrases.state` | `string[]` | `[]` | — | `state` pool; non-empty overrides `stateTemplate`. Template vars allowed. |
+| `phrases.mode` | `"random" \| "sequential"` | `"random"` | — | Pool selection order. |
+| `phrases.rotateMs` | `number` | `0` | `OPENCODE_DISCORD_ROTATE_MS` | `0` = once per transition; `>0` rotates (clamped 5000..3600000), timer `.unref()`. |
+| `phrases.cooldownMs` | `number` | `5000` | — | Min gap before a new phrase (`PRESENCE-DESIGN.md` §15). |
 | `privacy.hideProjectPath` | `boolean` | `false` | `OPENCODE_DISCORD_HIDE_PROJECT` | Omit project/directory from `details`. |
 | `privacy.hideModel` | `boolean` | `false` | `OPENCODE_DISCORD_HIDE_MODEL` | Omit model; `details` → `"Working"`. |
 | `privacy.hideCost` | `boolean` | `false` | `OPENCODE_DISCORD_HIDE_COST` | Omit cost from `state`. |
@@ -343,6 +357,10 @@ Deep merge: objects merge, arrays **replace** (so `buttons` from higher preceden
 | `sessionStats.showTokens` | `boolean` | `true` | — | Include token counts. |
 | `sessionStats.showCost` | `boolean` | `true` | — | Include cost (respects `hideCost`). |
 | `sessionStats.showElapsed` | `boolean` | `true` | — | Include `timestamps.start` timer. |
+| `presence.showTodo` | `boolean` | `true` | — | Append `TODO 4/9` to `state` (`PRESENCE-DESIGN.md` §9). |
+| `presence.showContext` | `boolean` | `true` | — | Append `150.4K (57%)` to `state` (`PRESENCE-DESIGN.md` §8). |
+| `presence.showSessionTitle` | `boolean` | `true` | — | Use the session title as `details`. |
+| `presence.showMcpProvider` | `boolean` | `true` | — | Show the MCP provider name on MCP activities. |
 | `perProject.enabled` | `boolean` | `true` | — | Look for project-level file. |
 | `perProject.filename` | `string` | `".discord-presence.json"` | — | Filename in `project.directory` / `worktree`. |
 
@@ -355,6 +373,7 @@ Deep merge: objects merge, arrays **replace** (so `buttons` from higher preceden
 | (c) Privacy/idle + per-project | `privacy.*`, `idle.*`, `perProject.*` |
 | (d) Custom app id & assets | `applicationId`, `largeImageKey/Text`, `smallImageKey/Text`, `assets.validate` |
 | (e) Buttons/links + multi-session | `buttons`, `multiSession.strategy` |
+| (f) Presence customization + engine | `activityType`, `activityName`, `phrases.*`, `presence.show*` + `core/tool-resolver.ts` |
 
 ### 5.2 Validation
 

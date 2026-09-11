@@ -189,7 +189,7 @@ Errors use `evt:"ERROR"` with `data: { "code": 1234, "message": "…" }`.
 **Supported activity types over RPC — Verified contradiction to flag:**
 
 - RPC `SET_ACTIVITY` supports only `Playing (0)`, `Listening (2)`, `Watching (3)`, `Competing (5)` — the doc has an explicit `<Info>` box to that effect.
-- The Gateway activity schema (for bots) supports `0..5` including `Streaming (1)` and `Custom (4)`. Do not send `1` or `4` over RPC; validate on the client.
+- The Gateway activity schema (for bots) supports `0..5` including `Streaming (1)` and `Custom (4)`. Do not send `1` or `4` over RPC; validate on the client. The plugin maps `activityType` (`playing`/`listening`/`watching`/`competing`) to these RPC types and defaults to `playing`; see [`PRESENCE-DESIGN.md`](./PRESENCE-DESIGN.md) §16.2 (two-line limit) and [`CONFIGURATION.md`](./CONFIGURATION.md) §4.
 
 ### 4.2 Activity object — field by field
 

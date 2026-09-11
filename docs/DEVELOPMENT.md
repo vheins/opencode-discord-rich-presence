@@ -45,7 +45,7 @@ opencode-discord-rich-presence/
 ├── src/
 │   ├── types.ts                     # PluginDeps, SessionStats, PresenceModel, SessionStateKind
 │   ├── config/
-│   │   ├── schema.ts                # 34-option zod schema + defaults (ARCHITECTURE.md §5.1)
+│   │   ├── schema.ts                # 45-option zod schema + defaults (ARCHITECTURE.md §5.1)
 │   │   └── loader.ts                # 4-tier precedence: global < project < env < runtime
 │   ├── core/
 │   │   └── state-machine.ts         # 6-state FSM (ARCHITECTURE.md §4), TRANSITIONS table
@@ -61,10 +61,11 @@ opencode-discord-rich-presence/
 │   ├── ARCHITECTURE.md              # Module map, data flow, FSM, config schema, transport
 │   ├── OPENCODE-PLUGIN-API.md       # Authoritative plugin API (pin 193de13a, 32 events)
 │   ├── DISCORD-RPC.md               # Wire format, opcodes, IPC paths, rate limits
-│   ├── CONFIGURATION.md             # 34-option reference + precedence + examples
+│   ├── CONFIGURATION.md             # 45-option reference + precedence + examples
 │   ├── EXTENDING.md                 # Adding fields/events/options, swapping transport
 │   ├── COMMUNITY-ANALYSIS.md        # Gap matrix vs 3 community plugins
-│   ├── ROADMAP.md                   # MVP → v1 → v2 → v3 (5 target features)
+│   ├── ROADMAP.md                   # MVP → v1 → v2 → v3 (6 target features)
+│   ├── PRESENCE-DESIGN.md           # Presence vision: resolver, MCP, phrases, telemetry
 │   ├── DEVELOPMENT.md               # This file
 │   └── _research/
 │       └── community-plugins.md     # Raw research notes

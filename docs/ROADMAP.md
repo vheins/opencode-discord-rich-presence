@@ -10,8 +10,8 @@
 1. [Overview & Feature→Milestone Map](#1-overview--featuremilestone-map)
 2. [Milestone 0 — MVP: Baseline Presence](#2-milestone-0--mvp-baseline-presence)
 3. [Milestone 1 — v1: Session Stats + Hardened Transport + Per-Project Config](#3-milestone-1--v1-session-stats--hardened-transport--per-project-config)
-4. [Milestone 2 — v2: Privacy/Idle + Custom App & Assets + Buttons](#4-milestone-2--v2-privacyidle--custom-app--assets--buttons)
-5. [Milestone 3 — v3: Multi-Session](#5-milestone-3--v3-multi-session)
+4. [Milestone 2 — v2: Privacy/Idle + Custom App & Assets + Buttons + Presence Customization](#4-milestone-2--v2-privacyidle--custom-app--assets--buttons--presence-customization)
+5. [Milestone 3 — v3: Multi-Session + Presence Engine](#5-milestone-3--v3-multi-session--presence-engine)
 6. [Dependency Graph](#6-dependency-graph)
 7. [Exit & Release Criteria](#7-exit--release-criteria)
 8. [Risks & Mitigations](#8-risks--mitigations)
@@ -26,10 +26,10 @@ Phases are strictly sequential — each milestone's acceptance criteria gate the
 ```
 MVP ──► v1 ──► v2 ──► v3
  │       │      │      │
- │       │      │      └─ multi-session (e)
- │       │      └──────── privacy/idle + app/assets + buttons (c,d,e-partial)
+ │       │      │      └─ multi-session (e) + presence engine (f: resolver, telemetry)
+ │       │      └──────── privacy/idle + app/assets + buttons + presence customization (c,d,e-partial,f-partial)
  │       └─────────────── session stats + transport hardening + per-project config (a,b,c-partial)
- └─────────────────────── baseline presence (foundation for all 5)
+ └─────────────────────── baseline presence (foundation for all 6)
 ```
 
 ### Target features → milestone
@@ -41,6 +41,7 @@ MVP ──► v1 ──► v2 ──► v3
 | (c) | Privacy / idle + per-project config | **v1** (per-project) + **v2** (privacy/idle) | `config/*`, `core/state-machine.ts` (`idle`), `core/presence-model.ts` (privacy) | Puri12 per-project + `enableFileSpotlight:false` (privacy-by-default); Khip01 idle templates |
 | (d) | Custom app id & assets | **v2** (M2) | `config/schema.ts`, `discord/assets.ts`, `core/presence-model.ts` | Khip01 `discordLargeImageKey/Text` (only configurable assets); all three support custom app id |
 | (e) | Buttons / links + multi-session | **v2** (buttons) + **v3** (multi-session) | `config/schema.ts` + `discord/assets.ts` (buttons); `core/multi-session.ts` + `discord/client.ts` (election) | Puri12 + phoenixak buttons; Puri12 file election vs Khip01 daemon (see `COMMUNITY-ANALYSIS.md` §3) |
+| (f) | Presence customization — activity type/name, phrase pools, tool-activity resolver, context/TODO telemetry | **v2** (activity type, phrases, identity) + **v3** (resolver, telemetry) | `core/tool-resolver.ts`, `core/presence-model.ts`, `config/schema.ts` | [`PRESENCE-DESIGN.md`](./PRESENCE-DESIGN.md) (design vision) |
 
 For the evidence behind each source, see `COMMUNITY-ANALYSIS.md` §§3–6 and `_research/community-plugins.md` §§1–5.
 
@@ -138,7 +139,7 @@ Out: `privacy.*` toggles, `idle.*` timeout/templates, custom `applicationId`/ass
 
 ---
 
-## 4. Milestone 2 — v2: Privacy/Idle + Custom App & Assets + Buttons
+## 4. Milestone 2 — v2: Privacy/Idle + Custom App & Assets + Buttons + Presence Customization
 
 > Goal: polish for real-world use — privacy controls, idle UX, branding, and links — all config-only, no new IPC semantics.
 
@@ -149,8 +150,9 @@ In:
 - **(c) Privacy + idle** — `privacy.hideProjectPath`/`hideModel`/`hideCost`/`hideFilePaths` (default `true`) enforced in `presence-model.ts` before truncation; `idle.enabled`/`timeoutMs` (300 s, 10 s..1 h) + `idle.details`/`idle.state` templates; FSM `idle.timeout` edge (`active`/`tool-running` → `idle` after `timeoutMs` with no activity); `file.edited`/`file.watcher.updated` 100 ms debounce for flicker avoidance.
 - **(d) Custom app & assets** — `applicationId` (`/^\d{17,20}$/`), `largeImageKey`/`largeImageText`/`smallImageKey`/`smallImageText` with lower-casing and `assets.validate` (`type ∈ {0,2,3,5}`, `mp:`/`https://` URLs); docs for Discord Developer Portal (create app → upload art → copy ID) — pattern from Puri12 README + Khip01 `docs/INSTALL.md`.
 - **(e-partial) Buttons** — `buttons[]` max 2, `label 1..32` / `url 1..512` / `https://` only, validated in `assets.ts`; default `[{label:"View on GitHub", url:"https://github.com/vheins/opencode-discord-rich-presence"}]`; `[]` disables.
+- **(f) Presence customization** — `activityType` (`playing`/`listening`/`watching`/`competing` → RPC `0/2/3/5`, default `playing`), `activityName` (best-effort top line — `PRESENCE-DESIGN.md` §16.1), `phrases.details`/`phrases.state` pools (non-empty overrides the matching `*Template`; template vars allowed) with `phrases.mode`/`phrases.rotateMs`/`phrases.cooldownMs`, and `presence.showSessionTitle`. Spotify-like recipe in `CONFIGURATION.md` §3f.
 
-Out: `multi-session` (v3). No daemon, no polling fallback.
+Out: `multi-session` (v3), tool-activity resolver + context/TODO telemetry (v3). No daemon, no polling fallback.
 
 ### 4.2 Deliverables
 
@@ -158,8 +160,9 @@ Out: `multi-session` (v3). No daemon, no polling fallback.
 |---|---|---|
 | Privacy/idle | `src/core/presence-model.ts`, `src/core/state-machine.ts`, `src/config/schema.ts` | `privacy.*`, `idle.*`, `idle.timeout` transition, file-label sanitization |
 | Assets/buttons | `src/discord/assets.ts`, `src/config/schema.ts` | Key validation, button caps, URL checks |
-| Config (v2 slice) | `src/config/schema.ts` | Add `privacy.*`, `idle.*`, `applicationId`, `large/smallImage*`, `assets.validate`, `buttons` |
-| Docs | `docs/CONFIGURATION.md` (complete), `README.md` (portal guide) | Privacy matrix + portal steps + button examples |
+| Config (v2 slice) | `src/config/schema.ts` | Add `privacy.*`, `idle.*`, `applicationId`, `large/smallImage*`, `assets.validate`, `buttons`, `activityType`, `activityName`, `phrases.*`, `presence.showSessionTitle` |
+| Presence customization | `src/core/presence-model.ts` | Phrase-pool selection/rotation (`phrases.mode`/`rotateMs`/`cooldownMs`), activity type/name in `buildActivity()` |
+| Docs | `docs/CONFIGURATION.md` (complete), `README.md` (portal guide) | Privacy matrix + portal steps + button/presence examples |
 
 ### 4.3 Acceptance criteria
 
@@ -170,6 +173,9 @@ Out: `multi-session` (v3). No daemon, no polling fallback.
 - [ ] `largeImageKey` with `https://` URL passes validation; key > 32 chars rejected with `warn`.
 - [ ] `buttons` with 3 entries rejected (max 2); `http://` URL rejected; valid 1–2 `https://` buttons appear on Discord.
 - [ ] `details`/`state`/`large_text`/`small_text` truncated to 128 before send (assert).
+- [ ] `activityType: "listening"` sends RPC `type: 2`; `"playing"` → `0`; an invalid value falls back to `playing` with a `warn`.
+- [ ] Non-empty `phrases.details`/`phrases.state` overrides the matching `*Template`; `phrases.rotateMs > 0` rotates and `phrases.cooldownMs` gates phrase changes; timers `.unref()`'d.
+- [ ] Spotify-like recipe (`CONFIGURATION.md` §3f) renders `Listening to <AppName>` with the `{project}` pool entry expanded.
 
 ### 4.4 Dependencies
 
@@ -178,9 +184,9 @@ Out: `multi-session` (v3). No daemon, no polling fallback.
 
 ---
 
-## 5. Milestone 3 — v3: Multi-Session
+## 5. Milestone 3 — v3: Multi-Session + Presence Engine
 
-> Goal: correct display when multiple opencode instances run concurrently — only one Discord presence at a time.
+> Goal: correct display when multiple opencode instances run concurrently — only one Discord presence at a time — plus the full tool-activity resolver and context/TODO telemetry.
 
 ### 5.1 Scope
 
@@ -192,8 +198,9 @@ In:
 - Single IPC slot guarantee: only `pickActive()` winner pushes via `discord/client.ts`; non-leaders keep local FSM but suppress `setActivity`. On leader exit, elect new leader within `minIntervalMs` (throttle window).
 - `MultiSessionCoordinator` events: `register`/`touch`/`remove`/`pickActive`/`onPickChanged` (see `ARCHITECTURE.md` §2.1).
 - No long-lived daemon subprocess — election is file-based; `Transport` remains swappable if a daemon is ever needed (rejected in `COMMUNITY-ANALYSIS.md` §7).
+- **(f) Tool activity resolver + telemetry** — `core/tool-resolver.ts` normalizes builtin / custom / MCP tools to a `ToolActivity` model (`source`, `provider?`, `tool`, `action`, `target?`, `phrase`). MCP is first-class: provider/tool parsed generically from `mcp__<provider>__<tool>`, with an unknown-provider fallback (`MCP • Running <tool> • <phrase>`) that never drops an event. Context telemetry (`150.4K (57%)`) and TODO progress (`TODO 4/9`) both merge into the single `state` line (`presence.showContext` / `presence.showTodo`); `presence.showMcpProvider` controls the MCP provider label. Event priority resolves concurrent signals as `ERROR > PERMISSION > MCP/TOOL > FILE > THINKING > IDLE` (see `ARCHITECTURE.md` §4.4).
 
-Out: nothing — v3 is the final milestone for the 5 target features. Post-v3 work (if any) is tracked separately.
+Out: nothing — v3 is the final milestone for the target features. Post-v3 work (if any) is tracked separately.
 
 ### 5.2 Deliverables
 
@@ -202,7 +209,10 @@ Out: nothing — v3 is the final milestone for the 5 target features. Post-v3 wo
 | Coordinator | `src/core/multi-session.ts` | `MultiSessionCoordinator` both strategies |
 | Client gating | `src/discord/client.ts` | Gate `setActivity` on `pickActive()`; re-push on `onPickChanged` |
 | Plugin wiring | `src/plugin.ts` | `register`/`touch`/`remove` on session lifecycle; cleanup leader file on `dispose` |
+| Tool resolver | `src/core/tool-resolver.ts` | Builtin/custom/MCP → `ToolActivity`; generic `mcp__<provider>__<tool>` parse + unknown fallback |
+| Presence model (telemetry) | `src/core/presence-model.ts` | Context `150.4K (57%)` + TODO `TODO 4/9` merge into `state`; event priority |
 | Tests | `tests/core/multi-session.test.ts` | Election, stale GC, handoff, last-wins |
+| Tests | `tests/core/tool-resolver.test.ts` | Builtin/MCP/unknown parse; priority ordering |
 
 ### 5.3 Acceptance criteria
 
@@ -211,12 +221,15 @@ Out: nothing — v3 is the final milestone for the 5 target features. Post-v3 wo
 - [ ] Stale leader file (no `touch` for > 10 s × 2 ticks) is GC'd; a new leader is elected without manual cleanup.
 - [ ] `multiSession.strategy: "last-wins"` → most-recent `touch()` wins regardless of files; no files written.
 - [ ] No `SET_ACTIVITY` from a non-leader ever reaches `Transport` (unit test with spy).
+- [ ] A builtin tool (`read`/`edit`/`bash`), a custom tool, and an MCP tool (`mcp__<provider>__<tool>`) each resolve to a distinct `ToolActivity`; an unknown MCP provider still renders a generic `MCP • Running <tool>` line (no dropped event).
+- [ ] With `presence.showContext:true`, `state` shows `150.4K (57%)`; with `presence.showTodo:true`, `TODO 4/9`; both co-exist on the single `state` line and are omitted when their toggles are `false`.
+- [ ] Concurrent `ERROR` + `PERMISSION` + `MCP/TOOL` signals → presence resolves to the highest priority (`ERROR > PERMISSION > MCP/TOOL > FILE > THINKING > IDLE`).
 
 ### 5.4 Dependencies
 
 - M2 shipped.
 - Puri12 `instance-coordinator.ts` + `presence-orchestrator.ts` as reference (see `COMMUNITY-ANALYSIS.md` §4.1); Khip01 `daemon.mjs` `pickDisplayedInstance` for `last-wins` semantics.
-- `ARCHITECTURE.md` §§2, 6, 8 (module map, transport, failure modes).
+- `ARCHITECTURE.md` §§2, 4.4, 6, 8 (module map, tool activity resolution, transport, failure modes).
 
 ---
 
@@ -231,7 +244,7 @@ DISC-001 ──► ARCH-001 ──► DOC-003 (this doc) ──► SCAF-001 ─�
   │                           M2 (privacy/idle/assets/buttons)
   │                                │
   │                                ▼
-  │                           M3 (multi-session)
+   │                           M3 (multi-session + presence engine)
   │
   └─► COMMUNITY-ANALYSIS.md (evidence base for all milestones)
 ```
@@ -256,7 +269,7 @@ Version tags:
 | `v0.1.0` | M0 | Pre-release |
 | `v1.0.0` | M1 | First minor with stats+transport |
 | `v1.1.0` | M2 | Privacy/idle/assets/buttons |
-| `v1.2.0` or `v2.0.0` | M3 | Multi-session (breaking only if config shape changes; otherwise `v1.2.0`) |
+| `v1.2.0` or `v2.0.0` | M3 | Multi-session + presence engine (breaking only if config shape changes; otherwise `v1.2.0`) |
 
 ---
 
@@ -276,6 +289,7 @@ Version tags:
 
 ## 9. References
 
+- [`PRESENCE-DESIGN.md`](./PRESENCE-DESIGN.md) — presence vision: identity, tool activity resolver, MCP, phrase pools, telemetry, event priority (task `DOC-004`)
 - [`COMMUNITY-ANALYSIS.md`](./COMMUNITY-ANALYSIS.md) — comparison matrix, lessons, per-feature adoptions (task `DISC-001` synthesis)
 - [`_research/community-plugins.md`](./_research/community-plugins.md) — raw research, source index with raw URLs (task `DISC-001`)
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — module map, FSM, config schema, transport, extension points, failure modes (task `ARCH-001`)

@@ -16,7 +16,7 @@ Architecture and protocol details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md
 
 ## Features
 
-Five target feature groups — all represented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5 and [`docs/ROADMAP.md`](docs/ROADMAP.md):
+Six target feature groups — all represented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5 and [`docs/ROADMAP.md`](docs/ROADMAP.md):
 
 | # | Feature | What you get |
 |---|---|---|
@@ -25,6 +25,7 @@ Five target feature groups — all represented in [`docs/ARCHITECTURE.md`](docs/
 | (c) | **Privacy / idle + per-project config** | `privacy.*` (`hideProjectPath`, `hideModel`, `hideCost`, `hideFilePaths` default `true`), `idle.*` (`enabled`, `timeoutMs` `10 s..1 h`, `details`/`state` templates), and `perProject.*` (project file overlays global; precedence `global < project < env < runtime`). |
 | (d) | **Custom app id & assets** | `applicationId` (`/^\d{17,20}$/` → `client_id` in handshake), `largeImageKey`/`largeImageText` + `smallImageKey`/`smallImageText` (lower-cased, `mp:`/`https://` or Art Asset key), validated by `src/discord/assets.ts`. |
 | (e) | **Buttons / links + multi-session** | `buttons[]` — up to 2 `https://` links (`label 1..32`, `url 1..512`). `multiSession.strategy` — `leader-election` (file-based, stale GC 10 s, settle ~1200 ms) or `last-wins`; only the elected session pushes to Discord's single IPC slot. |
+| (f) | **Presence customization + presence engine** | `activityType` (`playing`/`listening`/`watching`/`competing`), `activityName`, random `phrases.*` pools (with `cooldownMs`), tool-activity resolver (builtin/custom/MCP with unknown fallback), context `150.4K (57%)` + `TODO 4/9` telemetry, and `presence.show*` toggles. See [`docs/PRESENCE-DESIGN.md`](docs/PRESENCE-DESIGN.md). |
 
 ## Install
 
@@ -105,19 +106,20 @@ Minimal template override:
 }
 ```
 
-See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for all 34 options, precedence rules, and env var mappings.
+See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for all 45 options, precedence rules, and env var mappings.
 
 ## Docs index
 
 | Doc | What it covers |
 |---|---|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Module map, data flow, FSM (6 states), 34-option config schema, transport/reconnect/rate-limit, extension points, failure modes |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Module map, data flow, FSM (6 states), 45-option config schema, transport/reconnect/rate-limit, extension points, failure modes |
 | [`docs/OPENCODE-PLUGIN-API.md`](docs/OPENCODE-PLUGIN-API.md) | Authoritative plugin lifecycle, `PluginInput`/`Hooks`, 32 `Event` variants, `tool` helper, logging, compaction (pin `193de13a`) |
 | [`docs/DISCORD-RPC.md`](docs/DISCORD-RPC.md) | Discord IPC wire format, opcodes, field caps, rate limits |
-| [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Full 34-option reference, precedence `global < project < env < runtime`, examples, troubleshooting |
+| [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Full 45-option reference, precedence `global < project < env < runtime`, examples, troubleshooting |
+| [`docs/PRESENCE-DESIGN.md`](docs/PRESENCE-DESIGN.md) | Presence vision: identity, tool activity resolver, MCP, phrase pools, context/TODO telemetry, event priority, Discord constraints |
 | [`docs/EXTENDING.md`](docs/EXTENDING.md) | How to add presence fields, events, config options, or swap the transport |
 | [`docs/COMMUNITY-ANALYSIS.md`](docs/COMMUNITY-ANALYSIS.md) | Gap matrix vs 3 community plugins (Puri12, phoenixak, Khip01) |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | MVP → v1 → v2 → v3 milestones mapping the 5 target features |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | MVP → v1 → v2 → v3 milestones mapping the 6 target features |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Prerequisites, repo layout, scripts, local harness, debugging, publishing, contributing |
 | [`docs/_research/community-plugins.md`](docs/_research/community-plugins.md) | Raw research notes and source index |
 

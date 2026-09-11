@@ -11,7 +11,7 @@ src/
 ├── plugin.ts                # hook wiring + lifecycle (thin)
 ├── types.ts                 # shared types, SDK narrowings
 ├── config/{schema,loader}.ts
-├── core/{session-state,state-machine,presence-model,multi-session}.ts
+├── core/{session-state,state-machine,presence-model,multi-session,tool-resolver}.ts
 ├── discord/{transport,ipc,client,assets}.ts
 └── utils/{logger,format}.ts
 ```
@@ -29,7 +29,9 @@ Business logic never lives in closures inside `plugin.ts`.
 4. [Recipe 3 — Add or replace a transport](#4-recipe-3--add-or-replace-a-transport)
 5. [Recipe 4 — Add a config option](#5-recipe-4--add-a-config-option)
 6. [Recipe 5 — Add a test](#6-recipe-5--add-a-test)
-7. [Keeping types in sync](#7-keeping-types-in-sync)
+7. [Recipe 6 — Add a phrase-pool entry](#7-recipe-6--add-a-phrase-pool-entry)
+8. [Recipe 7 — Add a tool→activity mapping](#8-recipe-7--add-a-toolactivity-mapping)
+9. [Keeping types in sync](#9-keeping-types-in-sync)
 
 ---
 
@@ -275,7 +277,7 @@ if (config.privacy.hideWorkspace) {
 ### 5d. Document it — `docs/CONFIGURATION.md`
 
 Add a row to the full reference table (§4) and to the `privacy.*` detail table.
-Count must stay accurate — this recipe would move the total from 34 → 35.
+Count must stay accurate — this recipe would move the total from 45 → 46.
 
 ### Extension point
 
@@ -371,7 +373,90 @@ describe("DiscordClient", () => {
 
 ---
 
-## 7. Keeping types in sync
+## 7. Recipe 6 — Add a phrase-pool entry
+
+**Goal:** give a tool/action a custom random phrase instead of the default template.
+
+### 7a. Add the pool — `src/config/schema.ts`
+
+`phrases.details` and `phrases.state` are `string[]` (default `[]`). A **non-empty pool overrides the matching `*Template`**; template vars are expanded per entry.
+
+```ts
+// src/config/schema.ts
+phrases: z.object({
+  details: z.array(z.string()).default([]),   // overrides detailsTemplate when non-empty
+  state: z.array(z.string()).default([]),     // overrides stateTemplate when non-empty
+  mode: z.enum(["random", "sequential"]).default("random"),
+  rotateMs: z.number().int().min(0).default(0),
+  cooldownMs: z.number().int().min(0).default(5000),
+}),
+```
+
+### 7b. Selection & rendering — `src/core/presence-model.ts`
+
+- `phrases.mode: "random"` picks uniformly; `"sequential"` walks the pool in order.
+- `phrases.rotateMs: 0` selects **once per FSM transition**; `> 0` rotates on a timer clamped to `5000..3600000 ms` and `.unref()`'d so opencode can exit.
+- `phrases.cooldownMs` is the minimum gap before a new phrase may be chosen.
+- The rendered line is `<Activity> • <Phrase>` (e.g. `Editing • Refactoring auth flow`).
+
+### 7c. Example — `docs/CONFIGURATION.md` §3f
+
+```jsonc
+{ "activityType": "listening", "activityName": "opencode",
+  "phrases": { "details": ["{project}", "in {project}"], "rotateMs": 60000 } }
+```
+
+### Extension point
+
+| Want to… | Touch | Keep in sync |
+|---|---|---|
+| Phrase pool | `src/config/schema.ts` (`phrases.*`) → `src/core/presence-model.ts` (select + render) | `CONFIGURATION.md` §4/§5, `ARCHITECTURE.md` §5.1; pool entries are user data, never hardcoded in `core/` |
+
+---
+
+## 8. Recipe 7 — Add a tool→activity mapping
+
+**Goal:** map a new builtin, custom, or MCP tool to a human `ToolActivity`.
+
+### 8a. The model — `src/core/tool-resolver.ts`
+
+```ts
+// src/types.ts — ToolActivity
+export type ToolActivity = {
+  source: "builtin" | "custom" | "mcp";
+  provider?: string;   // MCP only (e.g. "github")
+  tool: string;        // raw tool name
+  action: string;      // human verb ("Reading", "Searching")
+  target?: string;     // file/query/url, privacy-filtered
+  phrase?: string;     // selected from phrases.details
+};
+```
+
+### 8b. Resolution order
+
+1. **builtin** — `read`/`edit`/`write`/`bash`/`grep`/`glob` map to fixed actions.
+2. **custom** — unknown non-MCP tools fall back to `Running <tool>`.
+3. **MCP** — tools shaped `mcp__<provider>__<tool>` are parsed generically into `provider` + `tool`; no per-server table needed. An **unknown provider never drops the event** — it renders the generic fallback `MCP • Running <tool> • <phrase>`.
+4. `presence.showMcpProvider: false` hides the provider label while keeping the tool action.
+5. Concurrent signals resolve by priority: `ERROR > PERMISSION > MCP/TOOL > FILE > THINKING > IDLE`.
+
+### 8c. Test — `tests/core/tool-resolver.test.ts`
+
+```ts
+// assert generic MCP parse + unknown fallback
+expect(resolve("mcp__github__search_code").provider).toBe("github");
+expect(resolve("mcp__unknown__do_thing").action).toContain("do_thing");
+```
+
+### Extension point
+
+| Want to… | Touch | Keep in sync |
+|---|---|---|
+| Tool mapping | `src/core/tool-resolver.ts` (parse + map) → `src/core/presence-model.ts` (`buildActivity()`) | `ARCHITECTURE.md` §4.4, `CONFIGURATION.md` §3f, `DISCORD-RPC.md` §4.1 (type 0/2/3/5, 2-line limit) |
+
+---
+
+## 9. Keeping types in sync
 
 Single sources of truth — do not duplicate:
 
@@ -383,6 +468,7 @@ Single sources of truth — do not duplicate:
 | Resolved config | `src/config/schema.ts` zod `ResolvedConfig` | `src/config/loader.ts`, `docs/CONFIGURATION.md`, `ARCHITECTURE.md §5` |
 | Transport contract | `src/discord/transport.ts` `Transport` / `FrameDecoder` | `src/discord/client.ts`, any custom transport impl |
 | Multi-session | `src/core/multi-session.ts` `MultiSessionCoordinator` | `src/plugin.ts` `pickActive()` wiring |
+| Tool activity | `src/types.ts` `ToolActivity` | `src/core/tool-resolver.ts` parse/map, `src/core/presence-model.ts` render |
 
 **Checklist after any extension:**
 
