@@ -1,5 +1,10 @@
 # opencode Discord Rich Presence
 
+[![npm version](https://img.shields.io/npm/v/opencode-discord-rich-presence.svg)](https://www.npmjs.com/package/opencode-discord-rich-presence)
+[![npm downloads](https://img.shields.io/npm/dm/opencode-discord-rich-presence.svg)](https://www.npmjs.com/package/opencode-discord-rich-presence)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Discord RPC](https://img.shields.io/badge/Discord-Rich%20Presence-5865F2.svg)](https://discord.com/developers/docs/rich-presence/overview)
+
 > Discord Rich Presence plugin for [opencode](https://opencode.ai) — show what you're working on in real time.
 
 Displays your active opencode session on Discord: current model, token usage, cost, elapsed time, tool activity, and project context. Built as a native opencode plugin (`@opencode-ai/plugin`) with cross-platform IPC, automatic reconnect, and privacy-aware rendering.
@@ -26,6 +31,32 @@ Six target feature groups — all represented in [`docs/ARCHITECTURE.md`](docs/A
 | (d) | **Custom app id & assets** | `applicationId` (`/^\d{17,20}$/` → `client_id` in handshake), `largeImageKey`/`largeImageText` + `smallImageKey`/`smallImageText` (lower-cased, `mp:`/`https://` or Art Asset key), validated by `src/discord/presence.ts`. |
 | (e) | **Buttons / links + multi-session** | `buttons[]` — up to 2 `https://` links (`label 1..32`, `url 1..512`). `multiSession.strategy` — `leader-election` (file-based, stale GC 10 s, settle ~1200 ms) or `last-wins`; only the elected session pushes to Discord's single IPC slot. |
 | (f) | **Presence customization + presence engine** | `activityType` (`playing`/`listening`/`watching`/`competing`), `activityName`, random `phrases.*` pools (with `cooldownMs`), tool-activity resolver (builtin/custom/MCP with unknown fallback), context `150.4K (57%)` + `TODO 4/9` telemetry, and `presence.show*` toggles. See [`docs/PRESENCE-DESIGN.md`](docs/PRESENCE-DESIGN.md). |
+
+## Install from npm
+
+Published on npm: <https://www.npmjs.com/package/opencode-discord-rich-presence>.
+
+```bash
+bun add opencode-discord-rich-presence
+# or: npm install opencode-discord-rich-presence
+```
+
+Then register it in your opencode config:
+
+```jsonc
+// ~/.config/opencode/opencode.json  (global)  or  ./opencode.json  (project)
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "opencode-discord-rich-presence",
+    // with options (highest precedence — see Configuration):
+    ["opencode-discord-rich-presence", { "debug": true, "privacy": { "hideFilePaths": true } }]
+  ]
+}
+```
+
+The package ships compiled ESM (`dist/`, with `dist/index.d.ts` types) plus the original
+TypeScript source (`src/`). See [Install](#install) below for the local-file alternative.
 
 ## Install
 
@@ -131,6 +162,7 @@ bun run typecheck   # tsc --noEmit
 bun run lint        # biome check .
 bun run format      # biome format --write .
 bun test            # bun test
+bun run build       # tsc -p tsconfig.build.json → dist/ (ESM + .d.ts + source maps)
 ```
 
 See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for the full workflow — prerequisites, repo layout, local plugin harness, debugging, and publishing.

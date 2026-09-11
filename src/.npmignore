@@ -1,0 +1,4 @@
+# Keep test sources out of the published tarball while shipping src/.
+# A subdirectory .npmignore overrides the package.json "files" whitelist for its subtree.
+*.test.ts
+*.test.tsx

@@ -4,20 +4,22 @@
   "version": "0.1.0",
   "description": "Discord Rich Presence plugin for opencode — session stats, cross-platform IPC, privacy controls.",
   "type": "module",
-  "main": "./src/index.ts",
-  "module": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "import": "./src/index.ts",
-      "default": "./src/index.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "files": [
+    "dist",
     "src",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "sideEffects": false,
   "engines": {
@@ -25,7 +27,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "format": "biome format --write .",
@@ -33,14 +35,29 @@
   },
   "keywords": [
     "opencode",
-    "opencode-plugin",
     "discord",
     "rich-presence",
-    "discord-rpc"
+    "discord-rpc",
+    "plugin",
+    "ai"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vheins/opencode-discord-rich-presence.git"
+  },
+  "homepage": "https://github.com/vheins/opencode-discord-rich-presence#readme",
+  "bugs": {
+    "url": "https://github.com/vheins/opencode-discord-rich-presence/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "zod": "^4.1.8"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "^1.18.30"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.13",

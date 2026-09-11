@@ -73,11 +73,14 @@ opencode-discord-rich-presence/
 │   ├── DEVELOPMENT.md               # This file
 │   └── _research/
 │       └── community-plugins.md     # Raw research notes
-├── package.json                     # type: module, exports -> ./src/index.ts
-├── tsconfig.json                    # ESNext, bundler, strict, noEmit
+├── package.json                     # type: module, exports -> ./dist/index.js
+├── tsconfig.json                    # ESNext, bundler, strict, noEmit (typecheck)
+├── tsconfig.build.json              # extends base, emits dist/ + declarations
 ├── biome.json                       # formatter + linter config
+├── LICENSE                          # MIT
+├── CHANGELOG.md                     # Keep a Changelog
 ├── bun.lock
-└── tsconfig.json
+└── dist/                            # build output (gitignored, shipped via files[])
 ```
 
 Still planned per `ARCHITECTURE.md` §2 (not yet present):
@@ -96,7 +99,7 @@ Exact scripts from `package.json` — document only these:
 
 | Script | Command | What it does |
 |---|---|---|
-| `build` | `tsc` | Type-check and emit declarations. `tsconfig.json` has `noEmit: true` today, so this is a type-check gate; artifacts are not emitted (plugin ships TS source for Bun). |
+| `build` | `tsc -p tsconfig.build.json` | Emit ESM JavaScript + `.d.ts` declarations + source maps to `dist/` (`noEmit: false`, `declaration`, `declarationMap`, `sourceMap`; `**/*.test.ts` excluded). |
 | `typecheck` | `tsc --noEmit` | Strict type-check without emit. No errors allowed. |
 | `lint` | `biome check .` | Lint + import organization + `noExplicitAny` / `noUnusedImports` checks. Exit non-zero on violations. |
 | `format` | `biome format --write .` | Auto-format in place (2-space, 100 cols). |
@@ -112,7 +115,7 @@ bun run format
 bun test
 ```
 
-`bun run build` is an alias for `tsc` today — same gate as `typecheck` while `noEmit` is set.
+`bun run build` uses `tsconfig.build.json` and emits `dist/`; `typecheck` uses `tsconfig.json` (`noEmit: true`) and also checks `*.test.ts`.
 
 ---
 
@@ -244,11 +247,12 @@ OPENCODE_DISCORD_DEBUG=1 opencode 2>&1 | grep -i presence
 bun run typecheck
 bun run lint
 bun test
+bun run build            # emit dist/ (required before packing/publishing)
 # ensure package.json fields are correct: name, version, exports, files, keywords
 cat package.json
 ```
 
-`package.json` ships `src/` + `README.md` + `LICENSE` (`files` array) and exposes `".": { "import": "./src/index.ts" }` (`type: module`, `sideEffects: false`). No build step is required — consumers (opencode via Bun) import the TypeScript source directly.
+`package.json` ships `dist/` + `src/` + `README.md` + `LICENSE` + `CHANGELOG.md` (`files` array) and exposes `".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }` (`type: module`, `sideEffects: false`). Run `bun run build` first so `dist/` exists — opencode (via Bun) imports the compiled ESM entry; `src/` is included for source-level inspection.
 
 Bump the version per `ROADMAP.md` §7 tags (`v0.1.0` MVP → `v1.0.0` v1 → `v1.1.0` v2 → `v1.2.0`/`v2.0.0` v3).
 
@@ -263,7 +267,8 @@ Verify the tarball before publishing:
 
 ```bash
 npm pack --dry-run
-# check output lists: src/**, README.md, LICENSE (and not node_modules/.opencode)
+# check output lists: dist/**, src/**, README.md, LICENSE, CHANGELOG.md, package.json
+# (and not node_modules/, docs/, tests, or .opencode/)
 ```
 
 ### 6.3 Consuming via `opencode.json`

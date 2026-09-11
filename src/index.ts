@@ -1,11 +1,15 @@
 /**
- * Package entry point — re-exports the opencode Discord Rich Presence plugin.
+ * Package entry point — exposes the opencode Discord Rich Presence plugin.
  *
- * Kept free of logic; all wiring lives in `plugin.ts` (docs/ARCHITECTURE.md §2).
+ * The default export uses opencode's v1 plugin module shape (`{ server }`) so the
+ * loader registers exactly one plugin instance. opencode's legacy detection path
+ * treats *every* exported function as a plugin, which would double-register the
+ * plugin (two IPC connections); the v1 shape short-circuits that path.
+ * See `docs/OPENCODE-PLUGIN-API.md` §2.2 and `packages/opencode/src/plugin/index.ts`.
  */
-export {
-  buildDiscordPresenceHooks,
-  createDiscordPresencePlugin,
-  createDiscordPresencePlugin as default,
-  type DiscordPresenceRuntime,
-} from "./plugin";
+import { createDiscordPresencePlugin } from "./plugin";
+
+export { buildDiscordPresenceHooks, type DiscordPresenceRuntime } from "./plugin";
+
+/** opencode v1 plugin module: a single `server` plugin function. */
+export default { server: createDiscordPresencePlugin };
