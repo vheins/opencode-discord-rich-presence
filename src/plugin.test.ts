@@ -233,7 +233,8 @@ describe("buildDiscordPresenceHooks", () => {
     await hooks.event?.({ event: assistantUpdated("ses_test", "claude-3", 0.01) });
     await tick();
     const activeActivity = holder.transport?.activities.at(-1)?.activity;
-    expect(activeActivity?.details).toBe("Working with claude-3");
+    // Session title is used as `details` when `presence.showSessionTitle` is enabled (default).
+    expect(activeActivity?.details).toBe("Test session");
     expect(typeof activeActivity?.state).toBe("string");
 
     await hooks.event?.({ event: sessionIdle("ses_test") });

@@ -2,25 +2,37 @@
  * Session state machine — the six-state presence FSM.
  *
  * Each opencode session owns one machine. Events are mapped to a `SessionStateKind`
- * through the typed `TRANSITIONS` table, then rendered to a `PresenceModel`. `dispatch`
- * returns `null` when the rendered model is unchanged so callers can skip the transport
- * push (see `docs/ARCHITECTURE.md` §4).
+ * through the typed `TRANSITIONS` table, then rendered to a `PresenceModel` by
+ * `buildPresenceModel` (see `./presence-model.ts`). `dispatch` returns `null` when the
+ * rendered model is unchanged so callers can skip the transport push
+ * (see `docs/ARCHITECTURE.md` §4).
  */
 import type {
+  ActivityTypeName,
   PresenceButton,
   PresenceModel,
   SessionStateKind,
   SessionStats,
-  TokenUsage,
+  ToolActivity,
 } from "../types";
+import { buildPresenceModel } from "./presence-model";
 
 /** Events the state machine understands; mapped from opencode hooks/events. */
 export type StateEvent =
   | { type: "session.created"; sessionID: string; title: string; startedAt?: number }
+  | { type: "session.updated"; sessionID: string; title?: string }
   | { type: "session.idle"; sessionID: string }
   | { type: "session.error"; sessionID: string; errorName: string }
   | { type: "message.updated"; sessionID: string; stats: SessionStats }
-  | { type: "tool.start"; sessionID: string; tool: string; filePath?: string }
+  | {
+      type: "tool.start";
+      sessionID: string;
+      tool: string;
+      filePath?: string;
+      activity?: ToolActivity;
+      /** Set on rotation ticks so phrase pools advance instead of re-selecting. */
+      rotate?: boolean;
+    }
   | { type: "tool.end"; sessionID: string }
   | { type: "permission.ask"; sessionID: string; title?: string }
   | { type: "permission.replied"; sessionID: string }
@@ -67,6 +79,32 @@ export const TRANSITIONS: readonly Transition[] = [
   { from: ["active", "tool-running"], on: "idle.timeout", to: "idle" },
 ];
 
+/** Phrase-pool settings surfaced to the presence builder. */
+export interface PresencePhraseConfig {
+  /** Custom `details` pool; non-empty overrides `detailsTemplate`. */
+  details: string[];
+  /** Custom `state` pool; non-empty overrides `stateTemplate`. */
+  state: string[];
+  /** Pool selection order. */
+  mode: "random" | "sequential";
+  /** Rotation interval in milliseconds; `0` disables rotation. */
+  rotateMs: number;
+  /** Minimum gap before a new phrase, in milliseconds. */
+  cooldownMs: number;
+}
+
+/** Presentation toggles surfaced to the presence builder. */
+export interface PresenceDisplayConfig {
+  /** Append TODO telemetry to `state`. */
+  showTodo: boolean;
+  /** Append context telemetry to `state`. */
+  showContext: boolean;
+  /** Use the session title as `details`. */
+  showSessionTitle: boolean;
+  /** Keep the provider name on MCP activities. */
+  showMcpProvider: boolean;
+}
+
 /** Config subset required to render a presence model. */
 export interface StateMachineConfig {
   /** Large art asset key. */
@@ -101,6 +139,19 @@ export interface StateMachineConfig {
   buttons?: PresenceButton[];
   /** Display name of the project/worktree, when available. */
   projectName?: string;
+  /** RPC activity type name; omitted falls back to `playing`. */
+  activityType?: ActivityTypeName;
+  /** Activity `name` override (best-effort). */
+  activityName?: string;
+  /** Phrase pools; omitted disables phrase overrides. */
+  phrases?: PresencePhraseConfig;
+  /** Display toggles; omitted keeps the legacy rendering path. */
+  presence?: PresenceDisplayConfig;
+  /**
+   * Selects the current phrase for a pool; injected by the plugin. The optional
+   * `rotate` flag advances the pool instead of re-selecting within cooldown.
+   */
+  phraseSelector?: (target: "details" | "state", rotate?: boolean) => string;
 }
 
 /** Input passed to a presence builder. */
@@ -117,10 +168,19 @@ export interface PresenceBuildInput {
   config: StateMachineConfig;
   /** Latest todo progress, when known. */
   todos?: { done: number; total: number };
+  /** Session title, used as `details` when enabled. */
+  sessionTitle?: string;
+  /** Normalized activity for the running tool, when known. */
+  activity?: ToolActivity;
+  /** Whether this rebuild is a phrase rotation tick. */
+  rotate?: boolean;
 }
 
 /** Pure function that renders a presence model from FSM state. */
 export type PresenceBuilder = (input: PresenceBuildInput) => PresenceModel;
+
+/** Default presence builder; re-exported for backward compatibility. */
+export const buildDefaultPresence: PresenceBuilder = buildPresenceModel;
 
 /** Per-session state machine contract. */
 export interface StateMachine {
@@ -148,210 +208,10 @@ export interface StateMachineOptions {
   config: StateMachineConfig;
   /** Pre-seeded stats; defaults to a zeroed record. */
   initialStats?: SessionStats;
-  /** Custom presence builder; defaults to `buildDefaultPresence`. */
+  /** Custom presence builder; defaults to `buildPresenceModel`. */
   buildPresence?: PresenceBuilder;
   /** Clock injection for deterministic tests; defaults to `Date.now`. */
   now?: () => number;
-}
-
-/** Render a template string, replacing known `{var}` placeholders. */
-function renderTemplate(template: string, vars: Record<string, string>): string {
-  return template.replace(/\{([a-zA-Z][a-zA-Z0-9]*)\}/g, (match, name: string) => {
-    const value = vars[name];
-    return value === undefined ? match : value;
-  });
-}
-
-/** Clamp a string to a maximum length using a single ellipsis. */
-function truncate(value: string, max: number): string {
-  return value.length <= max ? value : `${value.slice(0, Math.max(0, max - 1))}…`;
-}
-
-/** Format a USD cost for display. */
-function formatCost(cost: number): string {
-  return `$${cost.toFixed(4)}`;
-}
-
-/** Sum the token buckets used for display. */
-function tokenTotal(tokens: TokenUsage): number {
-  return tokens.input + tokens.output + tokens.reasoning;
-}
-
-/** Format a token count with k/M suffixes. */
-function formatTokens(count: number): string {
-  if (count >= 1_000_000) {
-    return `${(count / 1_000_000).toFixed(1)}M`;
-  }
-  if (count >= 1_000) {
-    return `${(count / 1_000).toFixed(1)}k`;
-  }
-  return String(count);
-}
-
-/** Format an elapsed duration as `Xh YYm`, `Ym Zs` or `Zs`. */
-function formatDuration(durationMs: number): string {
-  const totalSeconds = Math.max(0, Math.floor(durationMs / 1_000));
-  const hours = Math.floor(totalSeconds / 3_600);
-  const minutes = Math.floor((totalSeconds % 3_600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) {
-    return `${hours}h ${String(minutes).padStart(2, "0")}m`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
-  }
-  return `${seconds}s`;
-}
-
-/** Extract the tool name from a `tool.start` event. */
-function toolName(event: StateEvent): string | undefined {
-  return event.type === "tool.start" ? event.tool : undefined;
-}
-
-/** Extract the file path from a `tool.start` event. */
-function toolFilePath(event: StateEvent): string | undefined {
-  return event.type === "tool.start" ? event.filePath : undefined;
-}
-
-/** Extract the permission title from a `permission.ask` event. */
-function permissionTitle(event: StateEvent): string | undefined {
-  return event.type === "permission.ask" ? event.title : undefined;
-}
-
-/** Extract the error name from a `session.error` event. */
-function errorName(event: StateEvent): string | undefined {
-  return event.type === "session.error" ? event.errorName : undefined;
-}
-
-/** Build the template variable map for the current state. */
-function buildTemplateVars(input: PresenceBuildInput): Record<string, string> {
-  const { stats, event, config, todos } = input;
-  const model = config.sessionStats.showModel && !config.privacy.hideModel ? stats.modelID : "";
-  const provider = config.privacy.hideModel ? "" : stats.providerID;
-  const project = config.privacy.hideProjectPath ? "" : (config.projectName ?? "");
-  const file = config.privacy.hideFilePaths ? "" : (toolFilePath(event) ?? "");
-  const elapsed = config.sessionStats.showElapsed
-    ? formatDuration(stats.lastActivityAt - stats.startedAt)
-    : "";
-  const cost =
-    config.sessionStats.showCost && !config.privacy.hideCost ? formatCost(stats.cost) : "";
-  const tokens = config.sessionStats.showTokens ? formatTokens(tokenTotal(stats.tokens)) : "";
-  const contextPercent =
-    stats.contextTokens !== undefined && stats.contextLimit !== undefined && stats.contextLimit > 0
-      ? `${Math.round((stats.contextTokens / stats.contextLimit) * 100)}%`
-      : "";
-  return {
-    model,
-    provider,
-    project,
-    file,
-    elapsed,
-    cost,
-    tokens,
-    done: todos ? String(todos.done) : "",
-    total: todos ? String(todos.total) : "",
-    contextPercent,
-  };
-}
-
-/** Resolve the primary `details` line for a state. */
-function resolveDetails(input: PresenceBuildInput): string {
-  const { state, event, config, previous } = input;
-  const vars = buildTemplateVars(input);
-  switch (state) {
-    case "idle":
-      return config.idle.enabled
-        ? config.idle.details
-        : (previous?.details ?? renderTemplate(config.detailsTemplate, vars));
-    case "active":
-      return renderTemplate(config.detailsTemplate, vars);
-    case "tool-running": {
-      const tool = toolName(event) ?? "tool";
-      const file = config.privacy.hideFilePaths ? "" : toolFilePath(event);
-      return file !== undefined && file !== "" ? `Running ${tool} · ${file}` : `Running ${tool}`;
-    }
-    case "waiting-permission":
-      return "Waiting for approval";
-    case "compacting":
-      return "Compacting context…";
-    case "error":
-      return "Error";
-  }
-}
-
-/** Resolve the secondary `state` line for a state. */
-function resolveSecondary(input: PresenceBuildInput): string | undefined {
-  const { state, event, config, previous } = input;
-  const vars = buildTemplateVars(input);
-  switch (state) {
-    case "idle":
-      return config.idle.enabled
-        ? renderTemplate(config.idle.state, vars)
-        : (previous?.state ?? renderTemplate(config.stateTemplate, vars));
-    case "active":
-      return renderTemplate(config.stateTemplate, vars);
-    case "tool-running":
-      return previous?.state ?? renderTemplate(config.stateTemplate, vars);
-    case "waiting-permission":
-      return permissionTitle(event) ?? "Permission required";
-    case "compacting":
-      return "Summarizing session";
-    case "error":
-      return errorName(event) ?? "Unknown error";
-  }
-}
-
-/** Resolve the small overlay hover text for a state. */
-function resolveSmallText(input: PresenceBuildInput): string | undefined {
-  const { state, event, config } = input;
-  switch (state) {
-    case "idle":
-      return config.smallImageText;
-    case "active":
-      return "Thinking…";
-    case "tool-running":
-      return toolName(event);
-    case "waiting-permission":
-      return "Permission required";
-    case "compacting":
-      return "Compacting";
-    case "error":
-      return errorName(event);
-  }
-}
-
-/**
- * Default presence builder implementing the per-state field mapping.
- *
- * @param input Current state, stats, event and rendering config.
- * @returns A Discord-facing presence model.
- */
-export function buildDefaultPresence(input: PresenceBuildInput): PresenceModel {
-  const { stats, config } = input;
-  const model: PresenceModel = {
-    details: truncate(resolveDetails(input), 128),
-    largeImageKey: config.largeImageKey,
-    largeImageText: config.largeImageText,
-  };
-
-  const secondary = resolveSecondary(input);
-  if (secondary !== undefined && secondary !== "") {
-    model.state = truncate(secondary, 128);
-  }
-  if (config.sessionStats.showElapsed) {
-    model.startTimestamp = Math.floor(stats.startedAt / 1_000);
-  }
-  if (config.smallImageKey !== undefined) {
-    model.smallImageKey = config.smallImageKey;
-  }
-  const smallText = resolveSmallText(input);
-  if (smallText !== undefined && smallText !== "") {
-    model.smallImageText = truncate(smallText, 128);
-  }
-  if (config.buttons !== undefined && config.buttons.length > 0) {
-    model.buttons = config.buttons;
-  }
-  return model;
 }
 
 /** Create a zeroed stats record for a session. */
@@ -410,14 +270,15 @@ function fingerprint(model: PresenceModel): string {
 export function createStateMachine(options: StateMachineOptions): StateMachine {
   const config = options.config;
   const now = options.now ?? Date.now;
-  const builder = options.buildPresence ?? buildDefaultPresence;
+  const builder = options.buildPresence ?? buildPresenceModel;
 
   let current: SessionStateKind = "idle";
   let stats: SessionStats = options.initialStats ?? createInitialStats(options.sessionID, now());
   let todos: { done: number; total: number } | undefined;
+  let sessionTitle = "";
   let model: PresenceModel | null = null;
   let disposed = false;
-  let activeTool: { tool: string; filePath?: string } | null = null;
+  let activeTool: { tool: string; filePath?: string; activity?: ToolActivity } | null = null;
   let lastEvent: StateEvent = {
     type: "session.created",
     sessionID: options.sessionID,
@@ -426,7 +287,7 @@ export function createStateMachine(options: StateMachineOptions): StateMachine {
 
   /**
    * Reuse the active tool identity when an intermediate event arrives while
-   * `tool-running`, so the rendered model keeps the tool name and file path.
+   * `tool-running`, so the rendered model keeps the tool name, file path and activity.
    */
   function effectiveEvent(event: StateEvent): StateEvent {
     if (current !== "tool-running" || event.type === "tool.start" || activeTool === null) {
@@ -437,6 +298,7 @@ export function createStateMachine(options: StateMachineOptions): StateMachine {
       sessionID: options.sessionID,
       tool: activeTool.tool,
       filePath: activeTool.filePath,
+      activity: activeTool.activity,
     };
   }
 
@@ -448,6 +310,9 @@ export function createStateMachine(options: StateMachineOptions): StateMachine {
       event: effectiveEvent(event),
       config,
       todos,
+      sessionTitle,
+      activity: current === "tool-running" && activeTool !== null ? activeTool.activity : undefined,
+      rotate: event.type === "tool.start" ? event.rotate : undefined,
     });
 
   return {
@@ -462,8 +327,13 @@ export function createStateMachine(options: StateMachineOptions): StateMachine {
       lastEvent = event;
       const timestamp = now();
       stats = updateStats(stats, event, timestamp);
+      if (event.type === "session.created") {
+        sessionTitle = event.title;
+      } else if (event.type === "session.updated" && event.title !== undefined) {
+        sessionTitle = event.title;
+      }
       if (event.type === "tool.start") {
-        activeTool = { tool: event.tool, filePath: event.filePath };
+        activeTool = { tool: event.tool, filePath: event.filePath, activity: event.activity };
       } else if (event.type === "tool.end") {
         activeTool = null;
       }

@@ -11,9 +11,9 @@ src/
 ├── plugin.ts                # hook wiring + lifecycle (thin)
 ├── types.ts                 # shared types, SDK narrowings
 ├── config/{schema,loader}.ts
-├── core/{session-state,state-machine,presence-model,multi-session,tool-resolver}.ts
-├── discord/{transport,ipc,client,assets}.ts
-└── utils/{logger,format}.ts
+├── core/{session-tracker,state-machine,presence-model,presence-scheduler,tool-activity-resolver}.ts
+├── discord/{transport,ipc,presence,reconnect}.ts
+└── utils/logger.ts
 ```
 
 **Layer rule:** `plugin.ts` wires — domain lives in `core/`, I/O in `discord/`, schema in `config/`.
@@ -80,10 +80,10 @@ export function buildActivity(model: PresenceModel): Record<string, unknown> {
 }
 ```
 
-### 2c. Validate it — `src/discord/assets.ts`
+### 2c. Validate it — `src/discord/presence.ts`
 
 ```ts
-// src/discord/assets.ts
+// src/discord/presence.ts
 export function validateActivity(a: Record<string, unknown>): void {
   const party = a.party as { size?: [number, number] } | undefined;
   if (party?.size && (party.size[0] > party.size[1])) {
@@ -92,7 +92,7 @@ export function validateActivity(a: Record<string, unknown>): void {
 }
 ```
 
-`assets.validate` (`CONFIGURATION.md #26`) gates this call in `src/discord/client.ts`.
+`assets.validate` (`CONFIGURATION.md #26`) gates this call in `src/core/presence-scheduler.ts`.
 
 ### 2d. Wire state → model — `src/core/state-machine.ts`
 
@@ -103,7 +103,7 @@ Update the per-state field map (`ARCHITECTURE.md §4.3`) and `getModel()` for th
 
 | Want to… | Touch | Keep in sync |
 |---|---|---|
-| Presence field | `src/types.ts` → `src/core/presence-model.ts` → `src/discord/assets.ts` | `validateActivity`, `buildActivity`, per-state mapping table |
+| Presence field | `src/types.ts` → `src/core/presence-model.ts` → `src/discord/presence.ts` | `validateActivity`, `buildActivity`, per-state mapping table |
 
 ---
 
@@ -156,7 +156,7 @@ return {
 ### 3c. Check idle/reconnect interactions
 
 - If the new event should reset the idle timer, call the same `touch()` used for other activity events.
-- No transport change is needed — `src/discord/client.ts` already debounces/throttles whatever `PresenceModel` you produce.
+- No transport change is needed — `src/core/presence-scheduler.ts` already debounces/throttles whatever `PresenceModel` you produce.
 
 ### Extension point
 
@@ -194,29 +194,31 @@ export interface FrameDecoder {
 
 Reference implementation is in `ARCHITECTURE.md §6.1`.
 
-### 4b. Inject it — `src/discord/client.ts`
+### 4b. Inject it — `src/plugin.ts`
 
 ```ts
-// src/discord/client.ts — transport is the only dep
-export function createDiscordClient(opts: { transport: Transport; config: ResolvedConfig }) {
-  // owns reconnect FSM, nonce table, debounce/throttle, dedupe
+// src/plugin.ts — DiscordPresenceRuntime.createTransport is the injection seam
+export interface DiscordPresenceRuntime {
+  createTransport?: () => Transport;
+  // ...logger, config, etc.
 }
 ```
 
-Swapping means changing which `Transport` you pass to `createDiscordClient` — no change in `plugin.ts`:
+Swapping means passing a different `createTransport` to `buildDiscordPresenceHooks` — no change in `reconnect.ts` or `transport.ts`:
 
 ```ts
-// src/plugin.ts — inject custom transport
+// src/plugin.ts — inject custom transport via the runtime
 import { createCustomTransport } from "./discord/my-transport.js";
-const transport = createCustomTransport({ ipcPaths: getIpcPaths() });
-const client = createDiscordClient({ transport, config });
+const hooks = await buildDiscordPresenceHooks(input, options, {
+  createTransport: () => createCustomTransport({ ipcPaths: getIpcPaths() }),
+});
 ```
 
 ### 4c. Reuse existing pieces
 
 - `src/discord/ipc.ts` — IPC path resolution + `net.connect` probe (platform-aware, `DISCORD-RPC.md §2`).
-- `src/discord/assets.ts` — validation before `setActivity`.
-- Reconnect policy (generation guard + backoff + `.unref()` timers) is already in `client.ts` (`ARCHITECTURE.md §6.2`).
+- `src/discord/presence.ts` — validation before `setActivity`.
+- Reconnect policy (generation guard + backoff + `.unref()` timers) is already in `reconnect.ts` (`ARCHITECTURE.md §6.2`).
 
 Custom transports must honour: `setActivity(null)` clears (`activity: null` — no `CLEAR_ACTIVITY` opcode),
 nonces resolve via `Map<nonce, {resolve,reject,timer}>` with 10 s timeout, `CLOSE` (opcode 2) → `closed`
@@ -226,7 +228,7 @@ without immediate auto-reconnect.
 
 | Want to… | Touch | Keep in sync |
 |---|---|---|
-| Replace transport | `src/discord/transport.ts` (iface) + new impl + injection in `src/discord/client.ts` | `FrameDecoder` per-connection, `TransportState` FSM (`ARCHITECTURE.md §6.2`), `src/discord/ipc.ts` if changing discovery |
+| Replace transport | `src/discord/transport.ts` (iface) + new impl + injection via `src/plugin.ts` (`DiscordPresenceRuntime.createTransport`) | `FrameDecoder` per-connection, `TransportState` FSM (`ARCHITECTURE.md §6.2`), `src/discord/ipc.ts` if changing discovery |
 
 ---
 
@@ -289,22 +291,22 @@ Count must stay accurate — this recipe would move the total from 45 → 46.
 
 ## 6. Recipe 5 — Add a test
 
-Tests are colocated per module. No test suite is scaffolded yet — follow this layout when adding one:
+Tests are colocated per module as `src/**/*.test.ts` — follow this layout when adding one:
 
 ```
-tests/
-├── config/schema.test.ts
-├── core/{state-machine,presence-model,session-state,multi-session}.test.ts
-├── discord/{transport,client,assets}.test.ts
+src/
+├── config/{schema,loader}.test.ts
+├── core/{state-machine,presence-model,tool-activity-resolver}.test.ts
+├── discord/{transport,ipc,presence,reconnect}.test.ts
 └── plugin.test.ts
 ```
 
 ### 6a. Config schema test
 
 ```ts
-// tests/config/schema.test.ts
+// src/config/schema.test.ts
 import { describe, it, expect } from "bun:test";
-import { configSchema } from "../../src/config/schema.js";
+import { configSchema } from "./schema.js";
 
 describe("configSchema", () => {
   it("defaults hideFilePaths to true", () => {
@@ -320,9 +322,9 @@ describe("configSchema", () => {
 ### 6b. State machine test
 
 ```ts
-// tests/core/state-machine.test.ts
+// src/core/state-machine.test.ts
 import { describe, it, expect } from "bun:test";
-import { createStateMachine } from "../../src/core/state-machine.js";
+import { createStateMachine } from "./state-machine.js";
 
 describe("StateMachine", () => {
   it("active → tool-running on tool.start", () => {
@@ -341,10 +343,10 @@ describe("StateMachine", () => {
 ### 6c. Transport stub test
 
 ```ts
-// tests/discord/client.test.ts
+// src/discord/reconnect.controller.test.ts
 import { describe, it, expect } from "bun:test";
-import type { Transport } from "../../src/discord/transport.js";
-import { createDiscordClient } from "../../src/discord/client.js";
+import type { Transport } from "./transport.js";
+import { createReconnectController } from "./reconnect.js";
 
 function stubTransport(): Transport {
   return {
@@ -357,10 +359,10 @@ function stubTransport(): Transport {
   };
 }
 
-describe("DiscordClient", () => {
-  it("debounces rapid PresenceModel updates", async () => {
-    const client = createDiscordClient({ transport: stubTransport(), config: /* ... */ } as never);
-    // push N models within debounceMs → expect single setActivity
+describe("ReconnectController", () => {
+  it("queues the latest activity while not ready", async () => {
+    const controller = createReconnectController({ createTransport: stubTransport });
+    // send N payloads while disconnected → only the latest is flushed on ready
   });
 });
 ```
@@ -369,7 +371,7 @@ describe("DiscordClient", () => {
 
 | Want to… | Touch | Keep in sync |
 |---|---|---|
-| Test | New file under `tests/<area>/` matching `src/<area>/` | `src/types.ts` / `src/config/schema.ts` as source of truth; prefer `stubTransport` over real IPC in unit tests |
+| Test | New file colocated at `src/<area>/<name>.test.ts` | `src/types.ts` / `src/config/schema.ts` as source of truth; prefer `stubTransport` over real IPC in unit tests |
 
 ---
 
@@ -418,7 +420,7 @@ phrases: z.object({
 
 **Goal:** map a new builtin, custom, or MCP tool to a human `ToolActivity`.
 
-### 8a. The model — `src/core/tool-resolver.ts`
+### 8a. The model — `src/core/tool-activity-resolver.ts`
 
 ```ts
 // src/types.ts — ToolActivity
@@ -440,7 +442,7 @@ export type ToolActivity = {
 4. `presence.showMcpProvider: false` hides the provider label while keeping the tool action.
 5. Concurrent signals resolve by priority: `ERROR > PERMISSION > MCP/TOOL > FILE > THINKING > IDLE`.
 
-### 8c. Test — `tests/core/tool-resolver.test.ts`
+### 8c. Test — `src/core/tool-activity-resolver.test.ts`
 
 ```ts
 // assert generic MCP parse + unknown fallback
@@ -452,7 +454,7 @@ expect(resolve("mcp__unknown__do_thing").action).toContain("do_thing");
 
 | Want to… | Touch | Keep in sync |
 |---|---|---|
-| Tool mapping | `src/core/tool-resolver.ts` (parse + map) → `src/core/presence-model.ts` (`buildActivity()`) | `ARCHITECTURE.md` §4.4, `CONFIGURATION.md` §3f, `DISCORD-RPC.md` §4.1 (type 0/2/3/5, 2-line limit) |
+| Tool mapping | `src/core/tool-activity-resolver.ts` (parse + map) → `src/discord/presence.ts` (`buildActivity()`) | `ARCHITECTURE.md` §4.4, `CONFIGURATION.md` §3f, `DISCORD-RPC.md` §4.1 (type 0/2/3/5, 2-line limit) |
 
 ---
 
@@ -462,19 +464,19 @@ Single sources of truth — do not duplicate:
 
 | Concept | Source of truth | Derived |
 |---|---|---|
-| Presence shape | `src/types.ts` `PresenceModel` | `src/core/presence-model.ts` `buildActivity()`, `src/discord/assets.ts` `validateActivity()` |
-| Session stats | `src/types.ts` `SessionStats` | `src/core/session-state.ts`, `src/core/state-machine.ts` `StateEvent["message.updated"]` |
+| Presence shape | `src/types.ts` `PresenceModel` | `src/core/presence-model.ts` builder, `src/discord/presence.ts` `buildActivity()` / `validateActivity()` |
+| Session stats | `src/types.ts` `SessionStats` | `src/core/session-tracker.ts`, `src/core/state-machine.ts` `StateEvent["message.updated"]` |
 | FSM states/events | `src/core/state-machine.ts` `SessionStateKind` / `StateEvent` / `TRANSITIONS` | `ARCHITECTURE.md §4` diagram, `src/plugin.ts` event map |
 | Resolved config | `src/config/schema.ts` zod `ResolvedConfig` | `src/config/loader.ts`, `docs/CONFIGURATION.md`, `ARCHITECTURE.md §5` |
-| Transport contract | `src/discord/transport.ts` `Transport` / `FrameDecoder` | `src/discord/client.ts`, any custom transport impl |
-| Multi-session | `src/core/multi-session.ts` `MultiSessionCoordinator` | `src/plugin.ts` `pickActive()` wiring |
-| Tool activity | `src/types.ts` `ToolActivity` | `src/core/tool-resolver.ts` parse/map, `src/core/presence-model.ts` render |
+| Transport contract | `src/discord/transport.ts` `Transport` / `FrameDecoder` | `src/discord/reconnect.ts`, `src/core/presence-scheduler.ts`, any custom transport impl |
+| Session tracker | `src/core/session-tracker.ts` `SessionTracker` | `src/plugin.ts` `pickActive()` wiring |
+| Tool activity | `src/types.ts` `ToolActivity` | `src/core/tool-activity-resolver.ts` parse/map, `src/core/presence-model.ts` render |
 
 **Checklist after any extension:**
 
 1. `bun run typecheck` — no drift between `types.ts`/`schema.ts` and consumers.
 2. Update the relevant doc table: `ARCHITECTURE.md §4`/`§5`/`§7` or `CONFIGURATION.md §4`/`§5`.
-3. Add/adjust a test under `tests/<area>/`.
+3. Add/adjust a test at `src/<area>/<name>.test.ts`.
 4. `wc -l src/<file>.ts` — keep ≤500 lines; split if needed.
 
 ---

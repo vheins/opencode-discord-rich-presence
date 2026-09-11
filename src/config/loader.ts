@@ -227,6 +227,9 @@ function readEnvOverrides(
   set("largeImageText", readEnvString(env, "DISCORD_LARGE_IMAGE_TEXT"));
   set("smallImageKey", readEnvString(env, "DISCORD_SMALL_IMAGE_KEY"));
   set("smallImageText", readEnvString(env, "DISCORD_SMALL_IMAGE_TEXT"));
+  set("activityType", readEnvString(env, "OPENCODE_DISCORD_ACTIVITY_TYPE"));
+  set("activityName", readEnvString(env, "OPENCODE_DISCORD_ACTIVITY_NAME"));
+  set("phrases.rotateMs", parseEnvNumber(env, "OPENCODE_DISCORD_ROTATE_MS", warnings));
   set("privacy.hideProjectPath", parseEnvBoolean(env, "OPENCODE_DISCORD_HIDE_PROJECT", warnings));
   set("privacy.hideModel", parseEnvBoolean(env, "OPENCODE_DISCORD_HIDE_MODEL", warnings));
   set("privacy.hideCost", parseEnvBoolean(env, "OPENCODE_DISCORD_HIDE_COST", warnings));

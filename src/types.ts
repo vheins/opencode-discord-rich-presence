@@ -59,6 +59,36 @@ export interface PresenceButton {
   url: string;
 }
 
+/** RPC activity types accepted by Discord (`0/2/3/5`; `1` and `4` are invalid). */
+export type RpcActivityType = 0 | 2 | 3 | 5;
+
+/** Human-readable activity type names mapped onto `RpcActivityType`. */
+export type ActivityTypeName = "playing" | "listening" | "watching" | "competing";
+
+/** Normalized representation of the tool the agent is currently running. */
+export interface ToolActivity {
+  /** Where the tool came from. */
+  source: "builtin" | "custom" | "mcp";
+  /** Provider label for MCP tools, e.g. `"GitHub"`. */
+  provider?: string;
+  /** Raw tool identifier (provider prefix stripped for MCP). */
+  tool: string;
+  /** Human-readable action, e.g. `"Reading"`. */
+  action: string;
+  /** Optional action target, e.g. a file name. */
+  target?: string;
+  /** Personality phrase appended after ` • `. */
+  phrase: string;
+}
+
+/** Discord party block, used for TODO progress (`(4 of 9)`). */
+export interface PresenceParty {
+  /** Party identifier. */
+  id?: string;
+  /** `[current, max]` member counts. */
+  size?: [number, number];
+}
+
 /** Discord-facing presence payload produced by the state machine. */
 export interface PresenceModel {
   /** Primary activity line. */
@@ -79,6 +109,12 @@ export interface PresenceModel {
   buttons?: PresenceButton[];
   /** Discord `instance` flag. */
   instance?: boolean;
+  /** RPC activity type (`0/2/3/5`); defaults to `0` when omitted. */
+  activityType?: RpcActivityType;
+  /** Activity `name` override, best-effort (`docs/PRESENCE-DESIGN.md` §16.1). */
+  activityName?: string;
+  /** Optional party block (TODO progress). */
+  party?: PresenceParty;
 }
 
 /** The six lifecycle states a session can occupy. */

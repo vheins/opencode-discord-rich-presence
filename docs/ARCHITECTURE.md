@@ -37,9 +37,9 @@ src/
 ├── plugin.ts                # hook wiring + lifecycle
 ├── types.ts                 # shared types, SDK narrowings
 ├── config/{schema,loader}.ts
-├── core/{session-state,state-machine,presence-model,multi-session}.ts
-├── discord/{transport,ipc,client,assets}.ts
-└── utils/{logger,format}.ts
+├── core/{session-tracker,state-machine,presence-model,presence-scheduler,tool-activity-resolver}.ts
+├── discord/{transport,ipc,presence,reconnect}.ts
+└── utils/logger.ts
 ```
 
 | Module | Owns | Must NOT own |
@@ -47,14 +47,15 @@ src/
 | `index.ts` | Re-export `Plugin`. No side effects. | Hook logic, I/O |
 | `plugin.ts` | Constructs deps, registers `Hooks` (`event`, `tool.execute.*`, `permission.ask`, `experimental.session.compacting`, `dispose`), maps events → `StateEvent` | Frame codec, file I/O |
 | `config/*` | Schema, defaults, file discovery, merge + validation | Transport, rendering |
-| `core/session-state.ts` | Per-session `SessionStats` keyed by `sessionID`, idempotent by `messageID` | Discord I/O |
+| `core/session-tracker.ts` | Per-session `SessionStats` keyed by `sessionID` (idempotent by `messageID`) + active-session `pickActive()` | Discord I/O |
 | `core/state-machine.ts` | FSM per session, emits `PresenceModel` | Socket handling |
-| `core/presence-model.ts` | Pure `PresenceModel → Activity` | State, transport |
-| `core/multi-session.ts` | Picks displayed session (single IPC slot) | Frame codec |
-| `discord/transport.ts` | `Transport` iface + per-connection `FrameDecoder` | Presence content |
+| `core/presence-model.ts` | Pure `PresenceModel → Activity` + templates/telemetry | State, transport |
+| `core/presence-scheduler.ts` | Debounce/throttle/dedupe fingerprint + nonce generation | Presence content |
+| `core/tool-activity-resolver.ts` | Normalizes builtin/custom/MCP tools → `ToolActivity` | Transport, rendering |
+| `discord/transport.ts` | `Transport` iface + `FrameDecoder` + nonce table + `SET_ACTIVITY`/`CLEAR` | Presence content |
 | `discord/ipc.ts` | IPC path resolution + `net.connect` probe | Reconnect policy |
-| `discord/client.ts` | Reconnect FSM, nonce table, debounce/throttle, `SET_ACTIVITY`/`CLEAR` | Content decisions |
-| `discord/assets.ts` | Asset key validation + lower-casing | Transport |
+| `discord/reconnect.ts` | Reconnect FSM + exponential backoff + send queue | Content decisions |
+| `discord/presence.ts` | `buildActivity()` + asset key/button/type validation | Transport |
 | `utils/logger.ts` | `debug/info/warn/error` via `client.app.log` | Business logic |
 
 ### 2.1 Boundary interfaces
@@ -124,8 +125,8 @@ export interface StateMachine {
 ```
 
 ```ts
-// src/core/multi-session.ts
-export interface MultiSessionCoordinator {
+// src/core/session-tracker.ts
+export interface SessionTracker {
   register(sessionID: string, startedAt: number): void;
   touch(sessionID: string, atMs: number): void; remove(sessionID: string): void;
   pickActive(): string | null; onPickChanged(cb: (id: string | null) => void): () => void;
@@ -180,19 +181,19 @@ opencode runtime
      plugin.ts — maps raw events → StateEvent, debounces file/watcher (100 ms)
               │ StateEvent
               ▼
-     session-state.ts — upsert SessionStats by messageID (replace, not sum — OPENCODE-PLUGIN-API.md §11.3)
+     session-tracker.ts — upsert SessionStats by messageID (replace, not sum — OPENCODE-PLUGIN-API.md §11.3)
               │ SessionStats
               ▼
      state-machine.ts (per SID) — FSM transition → SessionStateKind + PresenceModel
               │ PresenceModel
               ▼
-     multi-session.ts — pickActive() — file-based leader election, stale GC, handoff settle
+     session-tracker.ts — pickActive() — file-based leader election, stale GC, handoff settle
               │ winning PresenceModel | null
               ▼
-     presence-model.ts + assets.ts — template + privacy + truncation + validateActivity()
+     presence-model.ts + presence.ts — template + privacy + truncation + validateActivity()
               │ Activity (Discord shape)
               ▼
-     discord/client.ts — nonce table + queue, debounce 100 ms, throttle 4000 ms, dedupe fingerprint
+     core/presence-scheduler.ts + discord/transport.ts — nonce table + queue, debounce 100 ms, throttle 4000 ms, dedupe fingerprint
               │ SET_ACTIVITY { pid, activity, nonce } (opcode 1 FRAME)
               ▼
      discord/transport.ts + ipc.ts — handshake {v:1, client_id} (opcode 0), scan 0..9
@@ -297,7 +298,7 @@ All states share `largeImageKey/Text` + `buttons` from config. Caps: `details`/`
 
 ### 4.4 Tool activity resolution
 
-`state` derives from the **currently active tool** via the Tool Activity Resolver (`core/tool-resolver.ts`); generic labels (`Thinking`, `Working`) are forbidden. Sources: **builtin** (`read`/`edit`/`write`/`bash`/`grep`/`glob`/`lsp`/`patch`/`todo`/`task`), **custom** (user/plugin tools), and **MCP** (first-class). All normalize to `ToolActivity { source, provider?, tool, action, target?, phrase }` and render as `<Activity> • <Phrase>`. MCP is parsed generically from `mcp__<provider>__<tool>`; unknown providers/tools fall back to `MCP • Running <tool> • <phrase>` with no engine change. Phrases come from `phrases.details`/`phrases.state` (non-empty overrides the matching `*Template`; template vars such as `{project}` are expanded), selected per `phrases.mode`, rotated per `phrases.rotateMs`, and gated by `phrases.cooldownMs`. Telemetry (context `150.4K (57%)` + `TODO 4/9`) merges into `state` because Discord renders only two text lines. Event priority: `ERROR > PERMISSION > MCP/TOOL > FILE > THINKING > IDLE`. Full model + verified Discord constraints: [`PRESENCE-DESIGN.md`](./PRESENCE-DESIGN.md) §§5–12, §16.
+`state` derives from the **currently active tool** via the Tool Activity Resolver (`core/tool-activity-resolver.ts`); generic labels (`Thinking`, `Working`) are forbidden. Sources: **builtin** (`read`/`edit`/`write`/`bash`/`grep`/`glob`/`lsp`/`patch`/`todo`/`task`), **custom** (user/plugin tools), and **MCP** (first-class). All normalize to `ToolActivity { source, provider?, tool, action, target?, phrase }` and render as `<Activity> • <Phrase>`. MCP is parsed generically from `mcp__<provider>__<tool>`; unknown providers/tools fall back to `MCP • Running <tool> • <phrase>` with no engine change. Phrases come from `phrases.details`/`phrases.state` (non-empty overrides the matching `*Template`; template vars such as `{project}` are expanded), selected per `phrases.mode`, rotated per `phrases.rotateMs`, and gated by `phrases.cooldownMs`. Telemetry (context `150.4K (57%)` + `TODO 4/9`) merges into `state` because Discord renders only two text lines. Event priority: `ERROR > PERMISSION > MCP/TOOL > FILE > THINKING > IDLE`. Full model + verified Discord constraints: [`PRESENCE-DESIGN.md`](./PRESENCE-DESIGN.md) §§5–12, §16.
 
 ---
 
@@ -373,7 +374,7 @@ Deep merge: objects merge, arrays **replace** (so `buttons` from higher preceden
 | (c) Privacy/idle + per-project | `privacy.*`, `idle.*`, `perProject.*` |
 | (d) Custom app id & assets | `applicationId`, `largeImageKey/Text`, `smallImageKey/Text`, `assets.validate` |
 | (e) Buttons/links + multi-session | `buttons`, `multiSession.strategy` |
-| (f) Presence customization + engine | `activityType`, `activityName`, `phrases.*`, `presence.show*` + `core/tool-resolver.ts` |
+| (f) Presence customization + engine | `activityType`, `activityName`, `phrases.*`, `presence.show*` + `core/tool-activity-resolver.ts` |
 
 ### 5.2 Validation
 
@@ -385,7 +386,7 @@ Deep merge: objects merge, arrays **replace** (so `buttons` from higher preceden
 
 ### 6.1 Interface
 
-`Transport` is the only surface `client.ts` depends on — swap impl (library, custom `net`, stub) via this iface. `FrameDecoder` is per-connection and loops over coalesced frames (fixes both library bugs in `DISCORD-RPC.md` §3.1):
+`Transport` is the only surface `reconnect.ts` depends on — swap impl (library, custom `net`, stub) via this iface. `FrameDecoder` is per-connection and loops over coalesced frames (fixes both library bugs in `DISCORD-RPC.md` §3.1):
 
 ```ts
 // discord/transport.ts
@@ -453,13 +454,13 @@ Clearing: `clear()` sends `{ cmd:"SET_ACTIVITY", args:{ pid: process.pid, activi
 
 | Want to… | Touch | How |
 |---|---|---|
-| Add presence field | `types.ts` `PresenceModel` → `core/presence-model.ts` `buildActivity()` | Add field, extend builder + `assets.ts` validation |
+| Add presence field | `types.ts` `PresenceModel` → `core/presence-model.ts` builder + `discord/presence.ts` `buildActivity()` | Add field, extend builder + `discord/presence.ts` validation |
 | Handle new opencode event | `plugin.ts` + `core/state-machine.ts` (`StateEvent` + `TRANSITIONS`) | New `event` branch → new `StateEvent` variant + transition row; no transport change |
 | Add config option | `config/schema.ts` + `docs/CONFIGURATION.md` | Add zod key with `default()`, wire env in `loader.ts`, document in §5.1 |
-| Swap transport | `discord/transport.ts` (`Transport`) | Implement iface (wrap `@xhayper/discord-rpc` or custom `net`); inject into `client.ts`; keep `FrameDecoder` per-connection |
-| Custom display strategy | `core/multi-session.ts` | Implement `MultiSessionCoordinator` with different `pickActive()` |
-| New template var | `core/presence-model.ts` + `utils/format.ts` | Add to renderer + `VALID_TEMPLATE_VARS` allow-list |
-| New asset/button preset | `config/schema.ts` defaults + `discord/assets.ts` | Defaults only, unless adding asset packs |
+| Swap transport | `discord/transport.ts` (`Transport`) | Implement iface (wrap `@xhayper/discord-rpc` or custom `net`); inject via `plugin.ts` (`DiscordPresenceRuntime.createTransport`); keep `FrameDecoder` per-connection |
+| Custom display strategy | `core/session-tracker.ts` | Implement `SessionTracker` with a different `pickActive()` |
+| New template var | `core/presence-model.ts` | Add to renderer + `VALID_TEMPLATE_VARS` allow-list |
+| New asset/button preset | `config/schema.ts` defaults + `discord/presence.ts` | Defaults only, unless adding asset packs |
 
 `plugin.ts` stays thin — it only wires; domain in `core/`, I/O in `discord/`.
 

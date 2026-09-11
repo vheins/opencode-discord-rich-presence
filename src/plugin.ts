@@ -12,8 +12,17 @@ import type { Event, Permission } from "@opencode-ai/sdk";
 import { type ConfigLoaderOptions, createConfigLoader } from "./config/loader";
 import { DEFAULT_CLIENT_ID, type ResolvedConfig } from "./config/schema";
 import { createPresenceScheduler, type PresenceScheduler } from "./core/presence-scheduler";
-import { createSessionTracker, type SessionTracker } from "./core/session-tracker";
+import {
+  createSessionTracker,
+  type PresenceSignal,
+  type SessionTracker,
+} from "./core/session-tracker";
 import type { StateMachineConfig } from "./core/state-machine";
+import {
+  createToolActivityResolver,
+  type ToolActivityInput,
+  type ToolActivityResolver,
+} from "./core/tool-activity-resolver";
 import { createReconnectController, type ReconnectController } from "./discord/reconnect";
 import {
   type ClearTimeoutFn,
@@ -90,6 +99,44 @@ export async function buildDiscordPresenceHooks(
     });
   }
 
+  const resolver: ToolActivityResolver = createToolActivityResolver({
+    mode: config.phrases.mode,
+    cooldownMs: config.phrases.cooldownMs,
+    privacy: { hideFilePaths: config.privacy.hideFilePaths },
+    now,
+  });
+
+  /** Select (or advance) a phrase from a configured pool. */
+  const phraseSelector = (target: "details" | "state", rotate = false): string => {
+    const pool = target === "details" ? config.phrases.details : config.phrases.state;
+    if (pool.length === 0) {
+      return "";
+    }
+    const key = `config:${target}`;
+    return rotate ? resolver.rotatePool(pool, key) : resolver.selectPool(pool, key);
+  };
+
+  const modelContextLimits = new Map<string, number>();
+  const configApi = input.client.config;
+  if (typeof configApi?.providers === "function") {
+    try {
+      const result = await configApi.providers();
+      const data = result.data;
+      if (data !== undefined) {
+        for (const provider of data.providers) {
+          for (const model of Object.values(provider.models)) {
+            const limit = model.limit.context;
+            if (typeof limit === "number" && limit > 0) {
+              modelContextLimits.set(`${provider.id}/${model.id}`, limit);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      await logger.debug("failed to load model context limits", { error: errorMessage(error) });
+    }
+  }
+
   const machineConfig: StateMachineConfig = {
     largeImageKey: config.largeImageKey,
     largeImageText: config.largeImageText,
@@ -106,6 +153,22 @@ export async function buildDiscordPresenceHooks(
     privacy: config.privacy,
     buttons: config.buttons,
     projectName: projectName(input),
+    activityType: config.activityType,
+    activityName: config.activityName,
+    phrases: {
+      details: config.phrases.details,
+      state: config.phrases.state,
+      mode: config.phrases.mode,
+      rotateMs: config.phrases.rotateMs,
+      cooldownMs: config.phrases.cooldownMs,
+    },
+    presence: {
+      showTodo: config.presence.showTodo,
+      showContext: config.presence.showContext,
+      showSessionTitle: config.presence.showSessionTitle,
+      showMcpProvider: config.presence.showMcpProvider,
+    },
+    phraseSelector,
   };
 
   const transportFactory: () => Transport =
@@ -168,6 +231,10 @@ export async function buildDiscordPresenceHooks(
     now,
     setTimeoutFn: scheduleTimeout,
     clearTimeoutFn: cancelTimeout,
+    resolveActivity: (activityInput: ToolActivityInput) => resolver.resolve(activityInput),
+    rotateActivity: (activityInput: ToolActivityInput) => resolver.rotate(activityInput),
+    rotateMs: config.phrases.rotateMs,
+    contextLimit: (providerID, modelID) => modelContextLimits.get(`${providerID}/${modelID}`),
     onModel: (model) => scheduler.schedule(model),
     onClear: () => scheduler.schedule(null),
   });
@@ -181,7 +248,7 @@ export async function buildDiscordPresenceHooks(
       }
       case "session.updated": {
         const info = event.properties.info;
-        tracker.onSessionUpdated(info.id);
+        tracker.onSessionUpdated(info.id, info.title);
         break;
       }
       case "session.idle": {
@@ -204,7 +271,11 @@ export async function buildDiscordPresenceHooks(
         break;
       }
       case "message.part.updated": {
-        tracker.onMessagePart(event.properties.part.sessionID);
+        const part = event.properties.part;
+        const signal = partSignal(part.type);
+        if (signal !== undefined) {
+          tracker.onMessagePart(part.sessionID, signal);
+        }
         break;
       }
       case "todo.updated": {
@@ -303,6 +374,28 @@ function extractFilePath(args: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * Map a streaming message-part type to a presence signal.
+ *
+ * Text/step parts are intentionally ignored; the priority gate in the session
+ * tracker keeps higher-signal states from being overwritten (`PRESENCE-DESIGN.md` §12).
+ *
+ * @param type Message-part discriminant.
+ * @returns The matching signal, or `undefined` for low-signal parts.
+ */
+function partSignal(type: string): PresenceSignal | undefined {
+  switch (type) {
+    case "tool":
+      return "tool";
+    case "file":
+      return "file";
+    case "reasoning":
+      return "thinking";
+    default:
+      return undefined;
+  }
 }
 
 /** Derive a human-readable project name from the opencode worktree or directory. */

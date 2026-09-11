@@ -1,5 +1,5 @@
 /**
- * Config schema — the 34 documented options with defaults and validation.
+ * Config schema — the 45 documented options with defaults and validation.
  *
  * Uses zod to parse the merged config (see `docs/ARCHITECTURE.md` §5). Validation is
  * per top-level section: a malformed subtree is replaced with defaults and reported as
@@ -21,6 +21,12 @@ interface ValidationSchema {
   safeParse(value: unknown): { success: true; data: unknown } | { success: false; error: unknown };
   parse(value: unknown): unknown;
 }
+
+/** Minimum phrase rotation interval in milliseconds (rate-limit friendly). */
+const PHRASE_ROTATE_MIN_MS = 5_000;
+
+/** Maximum phrase rotation interval in milliseconds (1 hour). */
+const PHRASE_ROTATE_MAX_MS = 3_600_000;
 
 const DEFAULT_BUTTONS: PresenceButton[] = [
   {
@@ -69,6 +75,8 @@ const sections = {
   smallImageText: z.string().min(1).max(128).optional(),
   detailsTemplate: z.string().default("Working with {model}"),
   stateTemplate: z.string().default("{cost} · {tokens} tokens"),
+  activityType: z.enum(["playing", "listening", "watching", "competing"]).default("playing"),
+  activityName: z.string().min(1).max(128).optional(),
   privacy: z
     .object({
       hideProjectPath: z.boolean().default(false),
@@ -148,6 +156,40 @@ const sections = {
       showTokens: true,
       showCost: true,
       showElapsed: true,
+    })),
+  phrases: z
+    .object({
+      details: z.array(z.string().min(1).max(128)).default([]),
+      state: z.array(z.string().min(1).max(128)).default([]),
+      mode: z.enum(["random", "sequential"]).default("random"),
+      rotateMs: z
+        .number()
+        .int()
+        .default(0)
+        .transform((value) =>
+          value <= 0 ? 0 : Math.min(PHRASE_ROTATE_MAX_MS, Math.max(PHRASE_ROTATE_MIN_MS, value)),
+        ),
+      cooldownMs: z.number().int().min(0).default(5_000),
+    })
+    .default(() => ({
+      details: [],
+      state: [],
+      mode: "random" as const,
+      rotateMs: 0,
+      cooldownMs: 5_000,
+    })),
+  presence: z
+    .object({
+      showTodo: z.boolean().default(true),
+      showContext: z.boolean().default(true),
+      showSessionTitle: z.boolean().default(true),
+      showMcpProvider: z.boolean().default(true),
+    })
+    .default(() => ({
+      showTodo: true,
+      showContext: true,
+      showSessionTitle: true,
+      showMcpProvider: true,
     })),
   perProject: z
     .object({

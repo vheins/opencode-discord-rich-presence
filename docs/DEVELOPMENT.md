@@ -48,7 +48,11 @@ opencode-discord-rich-presence/
 │   │   ├── schema.ts                # 45-option zod schema + defaults (ARCHITECTURE.md §5.1)
 │   │   └── loader.ts                # 4-tier precedence: global < project < env < runtime
 │   ├── core/
-│   │   └── state-machine.ts         # 6-state FSM (ARCHITECTURE.md §4), TRANSITIONS table
+│   │   ├── state-machine.ts         # 6-state FSM (ARCHITECTURE.md §4), TRANSITIONS table
+│   │   ├── session-tracker.ts       # Per-session SessionStats + active-session pick
+│   │   ├── presence-model.ts        # PresenceModel builder, templates, telemetry
+│   │   ├── presence-scheduler.ts    # debounce/throttle/dedupe + nonce generation
+│   │   └── tool-activity-resolver.ts # builtin/custom/MCP → ToolActivity
 │   ├── discord/
 │   │   ├── ipc.ts                   # IPC path resolution + probe (win32 pipe / Unix socket)
 │   │   ├── transport.ts             # Transport iface + per-connection FrameDecoder
@@ -76,16 +80,8 @@ opencode-discord-rich-presence/
 └── tsconfig.json
 ```
 
-Planned per `ARCHITECTURE.md` §2 but not yet scaffolded (to be added by `SCAF-003` and later milestones):
+Still planned per `ARCHITECTURE.md` §2 (not yet present):
 
-- `src/index.ts` — re-exports `Plugin`, no logic
-- `src/plugin.ts` — hook wiring (`event`, `tool.execute.*`, `permission.ask`, `dispose`)
-- `src/core/session-state.ts` — per-session `SessionStats` store
-- `src/core/presence-model.ts` — pure `PresenceModel → Activity`
-- `src/core/multi-session.ts` — `MultiSessionCoordinator` (leader-election / last-wins)
-- `src/discord/client.ts` — reconnect FSM, nonce table, debounce/throttle
-- `src/discord/assets.ts` — asset key validation
-- `src/utils/format.ts` — template vars + truncation
 - `examples/` — minimal `opencode.json` + `.discord-presence.json` samples
 
 Do not import across `core ↔ discord` except through the boundary interfaces in `types.ts` (`ARCHITECTURE.md` §2.1).
@@ -217,7 +213,7 @@ OPENCODE_DISCORD_DEBUG=1 opencode
 | `warn: invalid applicationId` | `applicationId` not `/^\d{17,20}$/` (e.g., pasted URL or empty with typo) | Copy the numeric ID from <https://discord.com/developers/applications> → **General Information → Application ID**. Or leave `""` to use the bundled `DEFAULT_CLIENT_ID`. |
 | `disconnected` / `ENOENT` on connect | IPC socket not found | Discord creates `discord-ipc-0` (up to `9`) under `\\?\pipe\` (Windows) or `$XDG_RUNTIME_DIR`/`$TMPDIR`/`/tmp` (Unix). Check that Discord owns the socket: `ls /tmp/discord-ipc-*` or `ls $XDG_RUNTIME_DIR/discord-ipc-*`. Scanning `0..9` is automatic (`src/discord/ipc.ts`, `DISCORD-RPC.md` §2). |
 | `handshake timeout` / no `READY` | Discord slow to respond or `applicationId` rejected | Increase `reconnect.handshakeTimeoutMs` (default `10000 ms`; Khip01 uses `30000`). Check Application ID validity. |
-| `warn: invalid activity` — update dropped | `largeImageKey` > 32, `buttons` > 2, non-`https` URL, invalid `type` | Set `assets.validate: true` (default) and fix the flagged field. Validate in `src/discord/assets.ts`. Caps: `details`/`state`/`large_text`/`small_text` ≤ 128 (`DISCORD-RPC.md` §4.2). |
+| `warn: invalid activity` — update dropped | `largeImageKey` > 32, `buttons` > 2, non-`https` URL, invalid `type` | Set `assets.validate: true` (default) and fix the flagged field. Validate in `src/discord/presence.ts`. Caps: `details`/`state`/`large_text`/`small_text` ≤ 128 (`DISCORD-RPC.md` §4.2). |
 | Stale presence after quit | Discord never expires presence | Expected — `dispose` sends `activity: null` best-effort; card clears on next overwrite or Discord restart (`ARCHITECTURE.md` §8). |
 | Config change ignored | Higher precedence layer wins | Precedence is `global < project < env < runtime`. Arrays **replace** (so `buttons` from a higher layer wins entirely). Check `CONFIGURATION.md` §2. |
 | Timers keep opencode alive | Timers not `unref()`'d | All outliving timers (`reconnect`, `idle.timeout`, `throttle`) must be `.unref()`'d per `ARCHITECTURE.md` §8 invariants. |
@@ -330,4 +326,4 @@ Do not commit `node_modules/`, `dist/`, `.env*`, or `bun.lock` changes unrelated
 
 ---
 
-*Scripts: `package.json`. Types: `src/types.ts`. FSM: `src/core/state-machine.ts`. Transport: `src/discord/transport.ts` + `src/discord/ipc.ts` + `src/discord/reconnect.ts`. Config: `src/config/schema.ts` + `src/config/loader.ts`.*
+*Scripts: `package.json`. Types: `src/types.ts`. FSM: `src/core/state-machine.ts`. Transport: `src/core/presence-scheduler.ts` + `src/discord/transport.ts` + `src/discord/ipc.ts` + `src/discord/reconnect.ts`. Config: `src/config/schema.ts` + `src/config/loader.ts`.*

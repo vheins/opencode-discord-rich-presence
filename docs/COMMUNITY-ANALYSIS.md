@@ -72,7 +72,7 @@ Legend: ✅ implemented · ⚠️ partial / declared-but-incomplete · ❌ absen
 | **Idle handling** | ✅ `session.idle` + all-sessions-idle orchestrator | ⚠️ status strings only | ✅ `Waiting` state + idle template set | ✅ FSM `idle` state + `idle.timeoutMs` (300 s default, 10 s..1 h) + `idle.details`/`idle.state` templates |
 | **Privacy controls** | ⚠️ file spotlight opt-in (`enableFileSpotlight: false` by default) | ✅ never shows path/code (by design) | ❌ always shows model/context/cost | ✅ `privacy.*` — `hideProjectPath`, `hideModel`, `hideCost`, `hideFilePaths` (default `true`) |
 | **Cross-platform** | Library-managed, no OS branching | Library-managed | Explicit Linux/macOS; Windows pipe present but untested (README) | **Explicit**: `os.homedir()`/`os.tmpdir()`/`path.join()`, `win32` pipe, Flatpak/Snap notes carried from Khip01 |
-| **Multi-session** | ✅ file-based leader election (`~/.opencode-discord-presence/instances/…`, stale GC 10 s, settle 1200 ms) | ❌ singleton `rpcClient`, last event wins | ✅ daemon single connection, `pickDisplayedInstance` = most-recent-active | ✅ `core/multi-session.ts` `MultiSessionCoordinator` — `leader-election` (default) or `last-wins`; file-based election, stale GC, handoff settle |
+| **Multi-session** | ✅ file-based leader election (`~/.opencode-discord-presence/instances/…`, stale GC 10 s, settle 1200 ms) | ❌ singleton `rpcClient`, last event wins | ✅ daemon single connection, `pickDisplayedInstance` = most-recent-active | ✅ `core/session-tracker.ts` `SessionTracker` — `leader-election` (default) or `last-wins`; file-based election, stale GC, handoff settle |
 | **Session stats** | ⚠️ prompts + files + duration; `tokenUsage`/`cost` declared but never assigned | ❌ model + elapsed only | ✅ cost, tokens (in/out/reasoning/cache), context %, prompts, elapsed; idempotent by message id | ✅ `SessionStats` per `sessionID`, idempotent by `messageID` (replace-not-sum); `sessionStats.*` toggles; limits via `provider.list` → `opencode.json(c)` → fallback |
 | **Testing** | `bun test` + Playwright | None found | Node harness scripts | `vitest`/`bun test` per module; harness covers transport + FSM (see `ROADMAP.md`) |
 
@@ -138,11 +138,11 @@ Each subsection: gap from §3 → what we adopt in `ARCHITECTURE.md` → where i
 
 - **Gap:** Khip01 is the only complete impl; Puri12 declares `cost`/`tokenUsage` but never assigns; phoenixak has none (`community-plugins.md` §5a).
 - **We adopt:**
-  - `core/session-state.ts` — per-`sessionID` `SessionStats`, keyed by `messageID`, delta-replace on `message.updated` (lesson 8).
+  - `core/session-tracker.ts` — per-`sessionID` `SessionStats`, keyed by `messageID`, delta-replace on `message.updated` (lesson 8).
   - Token breakdown `{ input, output, reasoning, cache:{read,write} }`, `cost`, `contextTokens`/`contextLimit`/`contextPercent`, `promptCount`, `startedAt`/`lastActivityAt` (`ARCHITECTURE.md` §2.1).
   - Limit resolution chain `provider.list` → `opencode.json(c)` → fallback table (lesson 9).
   - `sessionStats.*` toggles (`showModel`/`showTokens`/`showCost`/`showElapsed`) wired through `privacy.hideModel`/`hideCost` and template vars.
-  - FSM `session-state.ts` surfaces stats in `state` (`"$<cost> · <tokens> tokens"`); `presence-model.ts` renders via `detailsTemplate`/`stateTemplate`.
+  - FSM `session-tracker.ts` surfaces stats in `state` (`"$<cost> · <tokens> tokens"`); `presence-model.ts` renders via `detailsTemplate`/`stateTemplate`.
 - **Roadmap:** **v1** (see `ROADMAP.md` M1).
 
 ### (b) Cross-platform IPC + auto-reconnect
@@ -151,7 +151,7 @@ Each subsection: gap from §3 → what we adopt in `ARCHITECTURE.md` → where i
 - **We adopt:**
   - `discord/ipc.ts` — explicit discovery scanning `discord-ipc-{0..9}` across `XDG_RUNTIME_DIR`/`TMPDIR`/`TEMP`/`/tmp`, `win32` `\\?\pipe\` branch, `net.connect` probe.
   - `discord/transport.ts` — `Transport` iface + per-connection `FrameDecoder` (lesson 3), wire `LE u32 opcode + len + JSON`, `MaxRpcFrameSize 64 KiB`.
-  - `discord/client.ts` — exp backoff `baseMs 1000 → capMs 30000`, `maxAttempts 10`, `jitterRatio 0.2`, generation guard, `handshakeTimeoutMs` configurable (default 10 s, Khip01 uses 30 s), debounce 100 ms + throttle 4 s + fingerprint dedupe, `retry_after` honoured, `CLOSE` (opcode 2) → `closed` without blind reconnect.
+  - `discord/reconnect.ts` — exp backoff `baseMs 1000 → capMs 30000`, `maxAttempts 10`, `jitterRatio 0.2`, generation guard, `handshakeTimeoutMs` configurable (default 10 s, Khip01 uses 30 s), debounce 100 ms + throttle 4 s + fingerprint dedupe, `retry_after` honoured, `CLOSE` (opcode 2) → `closed` without blind reconnect.
   - `utils/logger.ts` via `client.app.log` for `debug` first-failure vs `warn` after cap (Puri12 `shouldLogConnectFailure` pattern).
 - **Roadmap:** **v1** (M1). MVP ships a single-session transport without the full backoff tuning; hardened reconnect lands in v1.
 
@@ -170,7 +170,7 @@ Each subsection: gap from §3 → what we adopt in `ARCHITECTURE.md` → where i
 - **Gap:** All three support custom app id; only Khip01 supports custom asset key/text; Puri12 hardcodes keys, phoenixak hardcodes both (`community-plugins.md` §5d).
 - **We adopt:**
   - `applicationId` (`/^\d{17,20}$/`, env `OPENCODE_DISCORD_CLIENT_ID`/`DISCORD_APP_ID`) + `largeImageKey`/`largeImageText`/`smallImageKey`/`smallImageText` in `config/schema.ts`.
-  - `discord/assets.ts` — lower-casing, `type ∈ {0,2,3,5}` validation, `mp:`/`https://` URL support, button/asset caps (`details`/`state`/`large_text`/`small_text` ≤ 128, keys ≤ 32, buttons ≤ 2, `https://` only — `DISCORD-RPC.md` §4.2).
+  - `discord/presence.ts` — lower-casing, `type ∈ {0,2,3,5}` validation, `mp:`/`https://` URL support, button/asset caps (`details`/`state`/`large_text`/`small_text` ≤ 128, keys ≤ 32, buttons ≤ 2, `https://` only — `DISCORD-RPC.md` §4.2).
   - Docs for Discord Developer Portal (create app → upload art assets → copy Application ID) — to be added in `CONFIGURATION.md` (task `DOC-002`), pattern taken from Puri12 README and Khip01 `docs/INSTALL.md`.
 - **Roadmap:** **v2** (M2).
 
@@ -178,9 +178,9 @@ Each subsection: gap from §3 → what we adopt in `ARCHITECTURE.md` → where i
 
 - **Gap:** Puri12 + phoenixak have buttons, Khip01 does not; Puri12 (file election) and Khip01 (daemon) both solve multi-session, phoenixak does not; Discord allows only one IPC connection per app id so one strategy is mandatory (`community-plugins.md` §5e).
 - **We adopt:**
-  - `buttons[]` — `Array<{label: string, url: string}>`, max 2, validated in `assets.ts`; default single "View on GitHub" link; `[]` disables.
-  - `core/multi-session.ts` — `MultiSessionCoordinator` with two strategies: `leader-election` (default, file-based election under `~/.opencode-discord-presence/instances/…`, stale GC 10 s, settle ~1200 ms — Puri12 pattern) and `last-wins` (Khip01-style most-recent-active). Only the leader pushes via `discord/client.ts`; others keep local FSM.
-  - `Transport` single-slot guarantee: `multi-session.ts` `pickActive()` gates `client.ts` `setActivity`; `presence-model.ts` never pushes from a non-leader.
+  - `buttons[]` — `Array<{label: string, url: string}>`, max 2, validated in `presence.ts`; default single "View on GitHub" link; `[]` disables.
+  - `core/session-tracker.ts` — `SessionTracker` with two strategies: `leader-election` (default, file-based election under `~/.opencode-discord-presence/instances/…`, stale GC 10 s, settle ~1200 ms — Puri12 pattern) and `last-wins` (Khip01-style most-recent-active). Only the leader pushes via `discord/reconnect.ts`; others keep local FSM.
+  - `Transport` single-slot guarantee: `session-tracker.ts` `pickActive()` gates `presence-scheduler.ts` `setActivity`; `presence-model.ts` never pushes from a non-leader.
 - **Roadmap:** **Buttons in v2**, **multi-session in v3** (see `ROADMAP.md` — buttons are config-only and ship earlier; election is the most complex and ships last).
 
 ---

@@ -36,12 +36,12 @@ MVP ──► v1 ──► v2 ──► v3
 
 | Key | Feature (from `ARCH-001` §5.1) | Ships in | Primary modules | Community source |
 |---|---|---|---|---|
-| (a) | Session stats — model / token / cost | **v1** (M1) | `core/session-state.ts`, `core/state-machine.ts`, `core/presence-model.ts` | Khip01 `session-state.js` (only complete impl); Puri12 `SessionMetrics` declared-but-empty |
-| (b) | Cross-platform IPC + auto-reconnect | **v1** (M1) | `discord/ipc.ts`, `discord/transport.ts`, `discord/client.ts`, `utils/logger.ts` | Puri12 `discord-rpc.ts` (generation guard + debounce) + Khip01 `discord-ipc.mjs` (explicit paths, 30 s handshake, throttle) |
+| (a) | Session stats — model / token / cost | **v1** (M1) | `core/session-tracker.ts`, `core/state-machine.ts`, `core/presence-model.ts` | Khip01 `session-state.js` (only complete impl); Puri12 `SessionMetrics` declared-but-empty |
+| (b) | Cross-platform IPC + auto-reconnect | **v1** (M1) | `discord/ipc.ts`, `discord/transport.ts`, `discord/reconnect.ts`, `utils/logger.ts` | Puri12 `discord-rpc.ts` (generation guard + debounce) + Khip01 `discord-ipc.mjs` (explicit paths, 30 s handshake, throttle) |
 | (c) | Privacy / idle + per-project config | **v1** (per-project) + **v2** (privacy/idle) | `config/*`, `core/state-machine.ts` (`idle`), `core/presence-model.ts` (privacy) | Puri12 per-project + `enableFileSpotlight:false` (privacy-by-default); Khip01 idle templates |
-| (d) | Custom app id & assets | **v2** (M2) | `config/schema.ts`, `discord/assets.ts`, `core/presence-model.ts` | Khip01 `discordLargeImageKey/Text` (only configurable assets); all three support custom app id |
-| (e) | Buttons / links + multi-session | **v2** (buttons) + **v3** (multi-session) | `config/schema.ts` + `discord/assets.ts` (buttons); `core/multi-session.ts` + `discord/client.ts` (election) | Puri12 + phoenixak buttons; Puri12 file election vs Khip01 daemon (see `COMMUNITY-ANALYSIS.md` §3) |
-| (f) | Presence customization — activity type/name, phrase pools, tool-activity resolver, context/TODO telemetry | **v2** (activity type, phrases, identity) + **v3** (resolver, telemetry) | `core/tool-resolver.ts`, `core/presence-model.ts`, `config/schema.ts` | [`PRESENCE-DESIGN.md`](./PRESENCE-DESIGN.md) (design vision) |
+| (d) | Custom app id & assets | **v2** (M2) | `config/schema.ts`, `discord/presence.ts`, `core/presence-model.ts` | Khip01 `discordLargeImageKey/Text` (only configurable assets); all three support custom app id |
+| (e) | Buttons / links + multi-session | **v2** (buttons) + **v3** (multi-session) | `config/schema.ts` + `discord/presence.ts` (buttons); `core/session-tracker.ts` + `core/presence-scheduler.ts` (election) | Puri12 + phoenixak buttons; Puri12 file election vs Khip01 daemon (see `COMMUNITY-ANALYSIS.md` §3) |
+| (f) | Presence customization — activity type/name, phrase pools, tool-activity resolver, context/TODO telemetry | **v2** (activity type, phrases, identity) + **v3** (resolver, telemetry) | `core/tool-activity-resolver.ts`, `core/presence-model.ts`, `config/schema.ts` | [`PRESENCE-DESIGN.md`](./PRESENCE-DESIGN.md) (design vision) |
 
 For the evidence behind each source, see `COMMUNITY-ANALYSIS.md` §§3–6 and `_research/community-plugins.md` §§1–5.
 
@@ -58,7 +58,7 @@ In:
 - Plugin lifecycle: `src/plugin.ts` hook wiring (`event`, `tool.execute.before/after`, `dispose`) per `OPENCODE-PLUGIN-API.md` §3/§6 (pin `193de13a`).
 - Minimal FSM: `idle ↔ active ↔ tool-running` (subset of `ARCHITECTURE.md` §4; `waiting-permission`/`compacting`/`error` deferred to v1/v2).
 - Minimal presence: `details` (`"Working with {model}"` or `"Idle — ready"`), `state` (`elapsed` only), `startTimestamp`, `largeImageKey/Text` (bundled defaults).
-- Single-session transport: `discord/transport.ts` + `discord/ipc.ts` scanning `discord-ipc-0..9`, `discord/client.ts` with basic `connect`/`SET_ACTIVITY`/`clear`/`close`, disconnect → `disconnected` (no backoff tuning yet).
+- Single-session transport: `discord/transport.ts` + `discord/ipc.ts` scanning `discord-ipc-0..9`, `discord/reconnect.ts` with basic `connect`/`SET_ACTIVITY`/`clear`/`close`, disconnect → `disconnected` (no backoff tuning yet).
 - Config: global file `~/.config/opencode/discord-presence.json` + env `OPENCODE_DISCORD_ENABLED` / `OPENCODE_DISCORD_DEBUG`; `enabled:false` short-circuits.
 - Logger: `utils/logger.ts` via `client.app.log`.
 
@@ -75,7 +75,7 @@ Out (explicitly deferred):
 | Config (MVP slice) | `src/config/schema.ts`, `src/config/loader.ts` | Zod schema: `enabled`, `debug`, `largeImageKey/Text` only |
 | FSM (MVP slice) | `src/core/state-machine.ts` | 3-state `TRANSITIONS` subset; `dispatch → PresenceModel \| null` |
 | Presence builder (MVP) | `src/core/presence-model.ts` | Template-free MVP strings; truncation to 128 |
-| Transport (MVP) | `src/discord/transport.ts`, `src/discord/ipc.ts`, `src/discord/client.ts` | `Transport` iface + `FrameDecoder` + IPC scan; no backoff/jitter yet |
+| Transport (MVP) | `src/discord/transport.ts`, `src/discord/ipc.ts`, `src/discord/reconnect.ts` | `Transport` iface + `FrameDecoder` + IPC scan; no backoff/jitter yet |
 | Docs | `README.md`, `docs/CONFIGURATION.md` (MVP slice) | Install + enable/disable only |
 
 ### 2.3 Acceptance criteria
@@ -103,8 +103,8 @@ Out (explicitly deferred):
 
 In:
 
-- **(a) Session stats** — `core/session-state.ts` per-`sessionID` `SessionStats` (`cost`, `tokens {input,output,reasoning,cache}`, `contextTokens`/`contextLimit`/`contextPercent`, `promptCount`, `startedAt`/`lastActivityAt`), idempotent by `messageID` (replace-not-sum — `OPENCODE-PLUGIN-API.md` §11.3, Khip01 pattern). Limit chain `provider.list` → `opencode.json(c)` → fallback table. Wired through `sessionStats.showModel/showTokens/showCost/showElapsed` and template vars `{model}` `{provider}` `{cost}` `{tokens}` `{contextPercent}` `{elapsed}`. FSM `active`/`tool-running` `state` shows `"$<cost> · <tokens> tokens"`.
-- **(b) Hardened transport** — `discord/ipc.ts` explicit scan `0..9` + `win32` named pipe; `discord/transport.ts` per-connection `FrameDecoder` (coalesced-frame fix — `DISCORD-RPC.md` §3.1); `discord/client.ts` exp backoff `base 1 s → cap 30 s`, `maxAttempts 10`, `jitter 0.2`, generation guard, `handshakeTimeoutMs` configurable (Puri12 + Khip01 lessons 4–5), debounce 100 ms + throttle 4000 ms + fingerprint dedupe + `retry_after` honour, `CLOSE` (opcode 2) → `closed` (no blind reconnect), `clear()` best-effort on `dispose`.
+- **(a) Session stats** — `core/session-tracker.ts` per-`sessionID` `SessionStats` (`cost`, `tokens {input,output,reasoning,cache}`, `contextTokens`/`contextLimit`/`contextPercent`, `promptCount`, `startedAt`/`lastActivityAt`), idempotent by `messageID` (replace-not-sum — `OPENCODE-PLUGIN-API.md` §11.3, Khip01 pattern). Limit chain `provider.list` → `opencode.json(c)` → fallback table. Wired through `sessionStats.showModel/showTokens/showCost/showElapsed` and template vars `{model}` `{provider}` `{cost}` `{tokens}` `{contextPercent}` `{elapsed}`. FSM `active`/`tool-running` `state` shows `"$<cost> · <tokens> tokens"`.
+- **(b) Hardened transport** — `discord/ipc.ts` explicit scan `0..9` + `win32` named pipe; `discord/transport.ts` per-connection `FrameDecoder` (coalesced-frame fix — `DISCORD-RPC.md` §3.1); `discord/reconnect.ts` exp backoff `base 1 s → cap 30 s`, `maxAttempts 10`, `jitter 0.2`, generation guard, `handshakeTimeoutMs` configurable (Puri12 + Khip01 lessons 4–5), debounce 100 ms + throttle 4000 ms + fingerprint dedupe + `retry_after` honour, `CLOSE` (opcode 2) → `closed` (no blind reconnect), `clear()` best-effort on `dispose`.
 - **(c-partial) Per-project config** — `config/loader.ts` 4-tier precedence `global < project < env < runtime`, deep-merge (objects merge, arrays replace), `perProject.enabled`/`filename` (default `.discord-presence.json`), env `OPENCODE_DISCORD_*` with `DISCORD_APP_ID` alias. Zod validation with subtree fallback.
 - FSM additions: `session.error` → `error` state; `permission.ask/replied` and `compacting.start/end` transitions added (still no idle timeout — that is v2).
 
@@ -114,10 +114,10 @@ Out: `privacy.*` toggles, `idle.*` timeout/templates, custom `applicationId`/ass
 
 | Deliverable | Path | Notes |
 |---|---|---|
-| Session state | `src/core/session-state.ts` | `SessionStats` store + `addOrUpdateMessage` |
+| Session state | `src/core/session-tracker.ts` | `SessionStats` store + `addOrUpdateMessage` |
 | FSM (full minus idle) | `src/core/state-machine.ts` | 6 states minus `idle.timeout` edge; `error` added |
-| Presence templates | `src/core/presence-model.ts`, `src/utils/format.ts` | `{var}` renderer + `VALID_TEMPLATE_VARS` allow-list |
-| Transport hardening | `src/discord/client.ts`, `src/discord/assets.ts` | Backoff, throttle, nonce table, `validateActivity` |
+| Presence templates | `src/core/presence-model.ts` | `{var}` renderer + `VALID_TEMPLATE_VARS` allow-list |
+| Transport hardening | `src/discord/reconnect.ts`, `src/discord/presence.ts` | Backoff, throttle, nonce table, `validateActivity` |
 | Config (v1 slice) | `src/config/schema.ts`, `src/config/loader.ts` | Add `detailsTemplate`/`stateTemplate`, `reconnect.*`, `throttle.*`, `perProject.*`, `sessionStats.*` |
 | Docs | `docs/CONFIGURATION.md` (v1), `docs/EXTENDING.md` (scaffold) | Per-project file + stats vars documented |
 
@@ -149,7 +149,7 @@ In:
 
 - **(c) Privacy + idle** — `privacy.hideProjectPath`/`hideModel`/`hideCost`/`hideFilePaths` (default `true`) enforced in `presence-model.ts` before truncation; `idle.enabled`/`timeoutMs` (300 s, 10 s..1 h) + `idle.details`/`idle.state` templates; FSM `idle.timeout` edge (`active`/`tool-running` → `idle` after `timeoutMs` with no activity); `file.edited`/`file.watcher.updated` 100 ms debounce for flicker avoidance.
 - **(d) Custom app & assets** — `applicationId` (`/^\d{17,20}$/`), `largeImageKey`/`largeImageText`/`smallImageKey`/`smallImageText` with lower-casing and `assets.validate` (`type ∈ {0,2,3,5}`, `mp:`/`https://` URLs); docs for Discord Developer Portal (create app → upload art → copy ID) — pattern from Puri12 README + Khip01 `docs/INSTALL.md`.
-- **(e-partial) Buttons** — `buttons[]` max 2, `label 1..32` / `url 1..512` / `https://` only, validated in `assets.ts`; default `[{label:"View on GitHub", url:"https://github.com/vheins/opencode-discord-rich-presence"}]`; `[]` disables.
+- **(e-partial) Buttons** — `buttons[]` max 2, `label 1..32` / `url 1..512` / `https://` only, validated in `presence.ts`; default `[{label:"View on GitHub", url:"https://github.com/vheins/opencode-discord-rich-presence"}]`; `[]` disables.
 - **(f) Presence customization** — `activityType` (`playing`/`listening`/`watching`/`competing` → RPC `0/2/3/5`, default `playing`), `activityName` (best-effort top line — `PRESENCE-DESIGN.md` §16.1), `phrases.details`/`phrases.state` pools (non-empty overrides the matching `*Template`; template vars allowed) with `phrases.mode`/`phrases.rotateMs`/`phrases.cooldownMs`, and `presence.showSessionTitle`. Spotify-like recipe in `CONFIGURATION.md` §3f.
 
 Out: `multi-session` (v3), tool-activity resolver + context/TODO telemetry (v3). No daemon, no polling fallback.
@@ -159,7 +159,7 @@ Out: `multi-session` (v3), tool-activity resolver + context/TODO telemetry (v3).
 | Deliverable | Path | Notes |
 |---|---|---|
 | Privacy/idle | `src/core/presence-model.ts`, `src/core/state-machine.ts`, `src/config/schema.ts` | `privacy.*`, `idle.*`, `idle.timeout` transition, file-label sanitization |
-| Assets/buttons | `src/discord/assets.ts`, `src/config/schema.ts` | Key validation, button caps, URL checks |
+| Assets/buttons | `src/discord/presence.ts`, `src/config/schema.ts` | Key validation, button caps, URL checks |
 | Config (v2 slice) | `src/config/schema.ts` | Add `privacy.*`, `idle.*`, `applicationId`, `large/smallImage*`, `assets.validate`, `buttons`, `activityType`, `activityName`, `phrases.*`, `presence.showSessionTitle` |
 | Presence customization | `src/core/presence-model.ts` | Phrase-pool selection/rotation (`phrases.mode`/`rotateMs`/`cooldownMs`), activity type/name in `buildActivity()` |
 | Docs | `docs/CONFIGURATION.md` (complete), `README.md` (portal guide) | Privacy matrix + portal steps + button/presence examples |
@@ -192,13 +192,13 @@ Out: `multi-session` (v3), tool-activity resolver + context/TODO telemetry (v3).
 
 In:
 
-- **(e) Multi-session** — `core/multi-session.ts` `MultiSessionCoordinator` with two strategies:
+- **(e) Multi-session** — `core/session-tracker.ts` `SessionTracker` with two strategies:
   - `leader-election` (default): file-based election under `~/.opencode-discord-presence/instances/<hostname>/<clientId>/<pid>.json` (Puri12 pattern: atomic temp+rename, stale GC 10 s with 2-tick grace, winner = highest `lastActivity` → oldest `startedAt` → lowest pid, `DEFAULT_OWNER_SETTLE_MS` ~1200 ms handoff).
   - `last-wins`: most-recent-active instance wins (Khip01 `pickDisplayedInstance` pattern, no files).
-- Single IPC slot guarantee: only `pickActive()` winner pushes via `discord/client.ts`; non-leaders keep local FSM but suppress `setActivity`. On leader exit, elect new leader within `minIntervalMs` (throttle window).
-- `MultiSessionCoordinator` events: `register`/`touch`/`remove`/`pickActive`/`onPickChanged` (see `ARCHITECTURE.md` §2.1).
+- Single IPC slot guarantee: only `pickActive()` winner pushes via `discord/reconnect.ts`; non-leaders keep local FSM but suppress `setActivity`. On leader exit, elect new leader within `minIntervalMs` (throttle window).
+- `SessionTracker` events: `register`/`touch`/`remove`/`pickActive`/`onPickChanged` (see `ARCHITECTURE.md` §2.1).
 - No long-lived daemon subprocess — election is file-based; `Transport` remains swappable if a daemon is ever needed (rejected in `COMMUNITY-ANALYSIS.md` §7).
-- **(f) Tool activity resolver + telemetry** — `core/tool-resolver.ts` normalizes builtin / custom / MCP tools to a `ToolActivity` model (`source`, `provider?`, `tool`, `action`, `target?`, `phrase`). MCP is first-class: provider/tool parsed generically from `mcp__<provider>__<tool>`, with an unknown-provider fallback (`MCP • Running <tool> • <phrase>`) that never drops an event. Context telemetry (`150.4K (57%)`) and TODO progress (`TODO 4/9`) both merge into the single `state` line (`presence.showContext` / `presence.showTodo`); `presence.showMcpProvider` controls the MCP provider label. Event priority resolves concurrent signals as `ERROR > PERMISSION > MCP/TOOL > FILE > THINKING > IDLE` (see `ARCHITECTURE.md` §4.4).
+- **(f) Tool activity resolver + telemetry** — `core/tool-activity-resolver.ts` normalizes builtin / custom / MCP tools to a `ToolActivity` model (`source`, `provider?`, `tool`, `action`, `target?`, `phrase`). MCP is first-class: provider/tool parsed generically from `mcp__<provider>__<tool>`, with an unknown-provider fallback (`MCP • Running <tool> • <phrase>`) that never drops an event. Context telemetry (`150.4K (57%)`) and TODO progress (`TODO 4/9`) both merge into the single `state` line (`presence.showContext` / `presence.showTodo`); `presence.showMcpProvider` controls the MCP provider label. Event priority resolves concurrent signals as `ERROR > PERMISSION > MCP/TOOL > FILE > THINKING > IDLE` (see `ARCHITECTURE.md` §4.4).
 
 Out: nothing — v3 is the final milestone for the target features. Post-v3 work (if any) is tracked separately.
 
@@ -206,13 +206,13 @@ Out: nothing — v3 is the final milestone for the target features. Post-v3 work
 
 | Deliverable | Path | Notes |
 |---|---|---|
-| Coordinator | `src/core/multi-session.ts` | `MultiSessionCoordinator` both strategies |
-| Client gating | `src/discord/client.ts` | Gate `setActivity` on `pickActive()`; re-push on `onPickChanged` |
+| Coordinator | `src/core/session-tracker.ts` | `SessionTracker` both strategies |
+| Client gating | `src/core/presence-scheduler.ts` | Gate `setActivity` on `pickActive()`; re-push on `onPickChanged` |
 | Plugin wiring | `src/plugin.ts` | `register`/`touch`/`remove` on session lifecycle; cleanup leader file on `dispose` |
-| Tool resolver | `src/core/tool-resolver.ts` | Builtin/custom/MCP → `ToolActivity`; generic `mcp__<provider>__<tool>` parse + unknown fallback |
+| Tool resolver | `src/core/tool-activity-resolver.ts` | Builtin/custom/MCP → `ToolActivity`; generic `mcp__<provider>__<tool>` parse + unknown fallback |
 | Presence model (telemetry) | `src/core/presence-model.ts` | Context `150.4K (57%)` + TODO `TODO 4/9` merge into `state`; event priority |
-| Tests | `tests/core/multi-session.test.ts` | Election, stale GC, handoff, last-wins |
-| Tests | `tests/core/tool-resolver.test.ts` | Builtin/MCP/unknown parse; priority ordering |
+| Tests | `src/core/session-tracker.test.ts` | Election, stale GC, handoff, last-wins |
+| Tests | `src/core/tool-activity-resolver.test.ts` | Builtin/MCP/unknown parse; priority ordering |
 
 ### 5.3 Acceptance criteria
 
@@ -278,7 +278,7 @@ Version tags:
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | `@xhayper/discord-rpc` handshake timeout (hardcoded 10 s) blocks startup | Medium | High | `connect()` fire-and-forget; `handshakeTimeoutMs` configurable; `FrameDecoder` per-connection even when wrapping library (`COMMUNITY-ANALYSIS.md` lessons 3–4) |
-| Discord only allows one IPC connection per app id | Certain | High | File-based election (M3) + single-slot gate in `client.ts` (lesson 1); no daemon needed |
+| Discord only allows one IPC connection per app id | Certain | High | File-based election (M3) + single-slot gate in `core/session-tracker.ts` (lesson 1); no daemon needed |
 | `provider.list` unavailable → no context limit | Medium | Low | 3-tier chain with fallback table; `contextPercent` becomes `undefined`, no crash (lesson 9) |
 | `message.updated` double-counts cost/tokens | Medium | Medium | Idempotent replace-not-sum by `messageID` (lesson 8); unit test for same-id re-send |
 | Windows named-pipe untested | Medium | Medium | Explicit `win32` branch in `ipc.ts`; carry Khip01 `PLATFORM-NOTES.md` guidance; CI on `win32` when available |

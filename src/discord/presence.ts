@@ -6,10 +6,10 @@
  * label 1..32, `https://` URL 1..512). A `null` model maps to `null`, which clears the
  * presence card (`docs/DISCORD-RPC.md` §4.2–§4.4).
  */
-import type { PresenceButton, PresenceModel } from "../types";
+import type { PresenceButton, PresenceModel, RpcActivityType } from "../types";
 
 /** Activity types accepted over RPC. */
-export type ActivityType = 0 | 2 | 3 | 5;
+export type ActivityType = RpcActivityType;
 
 /** Discord activity assets block. */
 export type ActivityAssets = {
@@ -51,6 +51,8 @@ export type ActivityButton = {
 export type Activity = {
   /** RPC activity type. */
   type?: ActivityType;
+  /** Activity name override; Discord shows it after the verb on the top line. */
+  name?: string;
   /** Primary description line. */
   details?: string;
   /** Secondary status line. */
@@ -69,9 +71,9 @@ export type Activity = {
 
 /** Options controlling activity construction. */
 export interface BuildActivityOptions {
-  /** RPC activity type; defaults to `0` (Playing). */
+  /** RPC activity type; falls back to the model's type, then `0` (Playing). */
   type?: ActivityType;
-  /** Optional party block passed through after validation. */
+  /** Party block override; falls back to the model's party. */
   party?: ActivityParty;
   /** Override the model's buttons. */
   buttons?: PresenceButton[];
@@ -176,7 +178,11 @@ export function buildActivity(
   if (model === null) {
     return null;
   }
-  const activity: Activity = { type: options.type ?? 0 };
+  const activity: Activity = { type: options.type ?? model.activityType ?? 0 };
+  const name = model.activityName;
+  if (name !== undefined && name !== "") {
+    activity.name = truncate(name, ACTIVITY_TEXT_MAX);
+  }
   if (model.details !== "") {
     activity.details = truncate(model.details, ACTIVITY_TEXT_MAX);
   }
@@ -194,8 +200,9 @@ export function buildActivity(
   if (buttons !== undefined) {
     activity.buttons = buttons;
   }
-  if (options.party !== undefined) {
-    activity.party = options.party;
+  const party = options.party ?? model.party;
+  if (party !== undefined) {
+    activity.party = party;
   }
   if (model.instance !== undefined) {
     activity.instance = model.instance;

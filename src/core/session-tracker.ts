@@ -13,13 +13,31 @@ import {
   type TimeoutHandle,
   unrefTimer,
 } from "../discord/transport";
-import type { PresenceModel, SessionStats, TokenUsage } from "../types";
+import type { PresenceModel, SessionStats, TokenUsage, ToolActivity } from "../types";
+import { createRotationTimer, type RotationTimer } from "./presence-model";
 import {
   createStateMachine,
   type StateEvent,
   type StateMachine,
   type StateMachineConfig,
 } from "./state-machine";
+import type { ToolActivityInput } from "./tool-activity-resolver";
+
+/**
+ * Presence signal classes ordered by display priority
+ * (`docs/PRESENCE-DESIGN.md` §12): error > permission > tool > file > thinking > idle.
+ */
+export type PresenceSignal = "idle" | "thinking" | "file" | "tool" | "permission" | "error";
+
+/** Numeric rank per signal; higher wins. */
+const SIGNAL_RANK: Record<PresenceSignal, number> = {
+  idle: 0,
+  thinking: 1,
+  file: 2,
+  tool: 3,
+  permission: 4,
+  error: 5,
+};
 
 /** Construction options for a session tracker. */
 export interface SessionTrackerOptions {
@@ -37,14 +55,22 @@ export interface SessionTrackerOptions {
   onModel: (model: PresenceModel) => void;
   /** Called when the active session disappears and presence should be cleared. */
   onClear?: () => void;
+  /** Normalize a started tool into a `ToolActivity` (built-in/custom/MCP). */
+  resolveActivity?: (input: ToolActivityInput) => ToolActivity;
+  /** Like `resolveActivity`, but forces a new phrase on rotation ticks. */
+  rotateActivity?: (input: ToolActivityInput) => ToolActivity;
+  /** Phrase rotation interval in milliseconds; `0` disables rotation. */
+  rotateMs?: number;
+  /** Resolve a model's context window from its ids; never returns `0`. */
+  contextLimit?: (providerID: string, modelID: string) => number | undefined;
 }
 
 /** Tracks per-session state and emits presence models for the active session. */
 export interface SessionTracker {
   /** Track a new session and make it active. */
   onSessionCreated(sessionID: string, title: string, startedAt?: number): void;
-  /** Refresh the active presence after a session metadata change. */
-  onSessionUpdated(sessionID: string): void;
+  /** Refresh a session after a metadata change, optionally updating its title. */
+  onSessionUpdated(sessionID: string, title?: string): void;
   /** Transition a session to idle. */
   onSessionIdle(sessionID: string): void;
   /** Transition a session to the error state. */
@@ -54,7 +80,7 @@ export interface SessionTracker {
   /** Replace session stats from an assistant/user message. */
   onMessageUpdated(message: Message): void;
   /** Refresh activity for a streaming message part without changing stats. */
-  onMessagePart(sessionID: string): void;
+  onMessagePart(sessionID: string, signal?: PresenceSignal): void;
   /** Update todo progress for a session. */
   onTodoUpdated(sessionID: string, todos: readonly Todo[]): void;
   /** Transition a session to waiting-for-permission. */
@@ -80,6 +106,9 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
   const cancelTimeout = options.clearTimeoutFn ?? clearTimeout;
   const machines = new Map<string, StateMachine>();
   const stats = new Map<string, SessionStats>();
+  const rotations = new Map<string, RotationTimer>();
+  const toolInputs = new Map<string, ToolActivityInput>();
+  const signals = new Map<string, PresenceSignal>();
   let activeSessionID: string | null = null;
   let idleHandle: TimeoutHandle | null = null;
 
@@ -103,6 +132,7 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
       if (sessionID === null) {
         return;
       }
+      stopRotation(sessionID);
       const machine = machines.get(sessionID);
       if (machine !== undefined) {
         apply(machine, { type: "idle.timeout", sessionID });
@@ -123,6 +153,61 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
     if (model !== null) {
       options.onModel(model);
     }
+  }
+
+  /** Cancel and forget a session's phrase rotation timer. */
+  function stopRotation(sessionID: string): void {
+    const timer = rotations.get(sessionID);
+    if (timer !== undefined) {
+      timer.dispose();
+      rotations.delete(sessionID);
+    }
+    toolInputs.delete(sessionID);
+  }
+
+  /** Start rotating the active tool's phrase for a session, when configured. */
+  function startRotation(sessionID: string, machine: StateMachine, input: ToolActivityInput): void {
+    stopRotation(sessionID);
+    const rotate = options.rotateActivity;
+    if ((options.rotateMs ?? 0) <= 0 || rotate === undefined) {
+      return;
+    }
+    toolInputs.set(sessionID, input);
+    const timer = createRotationTimer({
+      rotateMs: options.rotateMs ?? 0,
+      onTick: () => {
+        const activity = rotate(input);
+        apply(machine, {
+          type: "tool.start",
+          sessionID,
+          tool: input.tool,
+          filePath: input.filePath,
+          activity,
+          rotate: true,
+        });
+      },
+      setTimeoutFn: options.setTimeoutFn,
+      clearTimeoutFn: options.clearTimeoutFn,
+    });
+    rotations.set(sessionID, timer);
+    timer.start();
+  }
+
+  /** Force a session's current signal class. */
+  function setSignal(sessionID: string, signal: PresenceSignal): void {
+    signals.set(sessionID, signal);
+  }
+
+  /** Whether an incoming signal may replace the current one for a session. */
+  function signalAllows(sessionID: string, signal: PresenceSignal): boolean {
+    const current = signals.get(sessionID);
+    return current === undefined || SIGNAL_RANK[signal] >= SIGNAL_RANK[current];
+  }
+
+  /** Resolve a model's context window, treating unknown/zero as absent. */
+  function resolveLimit(providerID: string, modelID: string): number | undefined {
+    const limit = options.contextLimit?.(providerID, modelID);
+    return limit !== undefined && limit > 0 ? limit : undefined;
   }
 
   /** Return the machine for a session, creating it on first sight. */
@@ -173,12 +258,14 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
 
   /** Remove a session and fall back to the next most recent one. */
   function removeSession(sessionID: string): void {
+    stopRotation(sessionID);
     const machine = machines.get(sessionID);
     if (machine !== undefined) {
       machine.dispose();
     }
     machines.delete(sessionID);
     stats.delete(sessionID);
+    signals.delete(sessionID);
     if (activeSessionID !== sessionID) {
       return;
     }
@@ -206,8 +293,8 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
         promptCount: previous?.promptCount ?? 0,
         startedAt: previous?.startedAt ?? message.time.created,
         lastActivityAt: now(),
-        contextTokens: previous?.contextTokens,
-        contextLimit: previous?.contextLimit,
+        contextTokens: contextUsed(message.tokens) ?? previous?.contextTokens,
+        contextLimit: previous?.contextLimit ?? resolveLimit(message.providerID, message.modelID),
       };
     }
     return {
@@ -221,7 +308,8 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
       startedAt: previous?.startedAt ?? message.time.created,
       lastActivityAt: now(),
       contextTokens: previous?.contextTokens,
-      contextLimit: previous?.contextLimit,
+      contextLimit:
+        previous?.contextLimit ?? resolveLimit(message.model.providerID, message.model.modelID),
     };
   }
 
@@ -229,21 +317,31 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
     onSessionCreated(sessionID, title, startedAt) {
       const machine = ensureMachine(sessionID);
       setActive(sessionID);
+      setSignal(sessionID, "idle");
       apply(machine, { type: "session.created", sessionID, title, startedAt });
     },
-    onSessionUpdated(sessionID) {
+    onSessionUpdated(sessionID, title) {
+      const machine = machines.get(sessionID);
+      if (machine !== undefined && title !== undefined) {
+        apply(machine, { type: "session.updated", sessionID, title });
+        return;
+      }
       if (activeSessionID === sessionID) {
         pushActiveModel();
       }
     },
     onSessionIdle(sessionID) {
+      stopRotation(sessionID);
       const machine = machines.get(sessionID);
       if (machine !== undefined) {
+        setSignal(sessionID, "idle");
         apply(machine, { type: "session.idle", sessionID });
       }
     },
     onSessionError(sessionID, errorName) {
+      stopRotation(sessionID);
       const machine = ensureMachine(sessionID);
+      setSignal(sessionID, "error");
       apply(machine, { type: "session.error", sessionID, errorName });
     },
     onSessionDeleted(sessionID) {
@@ -254,18 +352,26 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
       const nextStats = buildStats(message, message.sessionID);
       stats.set(message.sessionID, nextStats);
       setActive(message.sessionID);
+      if (signalAllows(message.sessionID, "thinking")) {
+        setSignal(message.sessionID, "thinking");
+      }
       apply(machine, {
         type: "message.updated",
         sessionID: message.sessionID,
         stats: nextStats,
       });
     },
-    onMessagePart(sessionID) {
+    onMessagePart(sessionID, signal = "thinking") {
       const machine = machines.get(sessionID);
       const current = stats.get(sessionID);
-      if (machine !== undefined && current !== undefined) {
-        apply(machine, { type: "message.updated", sessionID, stats: current });
+      if (machine === undefined || current === undefined) {
+        return;
       }
+      if (!signalAllows(sessionID, signal)) {
+        return;
+      }
+      setSignal(sessionID, signal);
+      apply(machine, { type: "message.updated", sessionID, stats: current });
     },
     onTodoUpdated(sessionID, todos) {
       const machine = machines.get(sessionID);
@@ -276,45 +382,62 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
       apply(machine, { type: "todo.updated", sessionID, done, total: todos.length });
     },
     onPermissionAsked(sessionID, title) {
+      stopRotation(sessionID);
       const machine = ensureMachine(sessionID);
       setActive(sessionID);
+      setSignal(sessionID, "permission");
       apply(machine, { type: "permission.ask", sessionID, title });
     },
     onPermissionReplied(sessionID) {
       const machine = machines.get(sessionID);
       if (machine !== undefined) {
+        setSignal(sessionID, "thinking");
         apply(machine, { type: "permission.replied", sessionID });
       }
     },
     onCompactingStart(sessionID) {
+      stopRotation(sessionID);
       const machine = ensureMachine(sessionID);
       setActive(sessionID);
+      setSignal(sessionID, "tool");
       apply(machine, { type: "compacting.start", sessionID });
     },
     onCompactingEnd(sessionID) {
       const machine = machines.get(sessionID);
       if (machine !== undefined) {
+        setSignal(sessionID, "thinking");
         apply(machine, { type: "compacting.end", sessionID });
       }
     },
     onToolStart(sessionID, tool, filePath) {
       const machine = ensureMachine(sessionID);
       setActive(sessionID);
-      apply(machine, { type: "tool.start", sessionID, tool, filePath });
+      setSignal(sessionID, "tool");
+      const input: ToolActivityInput = { tool, filePath };
+      const activity = options.resolveActivity?.(input);
+      apply(machine, { type: "tool.start", sessionID, tool, filePath, activity });
+      startRotation(sessionID, machine, input);
     },
     onToolEnd(sessionID) {
+      stopRotation(sessionID);
       const machine = machines.get(sessionID);
       if (machine !== undefined) {
+        setSignal(sessionID, "thinking");
         apply(machine, { type: "tool.end", sessionID });
       }
     },
     dispose() {
       clearIdle();
+      for (const sessionID of [...rotations.keys()]) {
+        stopRotation(sessionID);
+      }
+      toolInputs.clear();
       for (const machine of machines.values()) {
         machine.dispose();
       }
       machines.clear();
       stats.clear();
+      signals.clear();
       activeSessionID = null;
     },
   };
@@ -323,4 +446,11 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
 /** Create a zeroed token usage record. */
 function emptyTokens(): TokenUsage {
   return { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
+}
+
+/** Sum every token bucket, returning `undefined` when nothing was used. */
+function contextUsed(tokens: TokenUsage): number | undefined {
+  const used =
+    tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write;
+  return used > 0 ? used : undefined;
 }

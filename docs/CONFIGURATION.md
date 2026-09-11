@@ -117,9 +117,9 @@ Result: `largeImageKey = "opencode"` (inherited from global), `privacy.hideProje
 | `privacy.hideModel` / `privacy.hideCost` | Hard overrides — strip even if `sessionStats.*` is true |
 | `detailsTemplate` / `stateTemplate` | Control the rendered text; vars `{model}` `{provider}` `{project}` `{file}` `{elapsed}` `{done}` `{total}` `{contextPercent}` |
 
-`SessionStats` is built in `src/core/session-state.ts` (idempotent by `messageID`,
+`SessionStats` is built in `src/core/session-tracker.ts` (idempotent by `messageID`,
 replace-not-sum per `OPENCODE-PLUGIN-API.md §11.3`) and rendered in
-`src/core/presence-model.ts` → `src/utils/format.ts`.
+`src/core/presence-model.ts`.
 
 ### 3b. Cross-platform IPC + reconnect
 
@@ -129,7 +129,7 @@ See `src/discord/ipc.ts` + `DISCORD-RPC.md §2`:
 - Windows: `\\?\pipe\discord-ipc-{0..9}`
 - Unix: `$XDG_RUNTIME_DIR` → `$TMPDIR` → `$TMP` → `$TEMP` → `/tmp` + `/discord-ipc-{n}`, scan `0..9`.
 
-Reconnect is owned by `src/discord/client.ts` (§6.2):
+Reconnect is owned by `src/discord/reconnect.ts` (§6.2):
 
 | Option | Effect |
 |---|---|
@@ -159,7 +159,7 @@ All privacy decisions live in `src/core/presence-model.ts`.
 | `smallImageKey` / `smallImageText` | Overlay icon (omit = no overlay) + hover text |
 | `assets.validate` | Validate keys, URLs, types, button count before sending |
 
-Keys are lower-cased per `DISCORD-RPC.md §5`; validation in `src/discord/assets.ts`.
+Keys are lower-cased per `DISCORD-RPC.md §5`; validation in `src/discord/presence.ts`.
 Asset slot empty on miss — rest of presence still displays.
 
 ### 3e. Buttons & multi-session
@@ -167,7 +167,7 @@ Asset slot empty on miss — rest of presence still displays.
 | Option | Effect |
 |---|---|
 | `buttons` | Up to 2 `{ label 1..32, url 1..512 https:// }`; `[]` = none. Only visible to *other* users |
-| `multiSession.strategy` | `leader-election` (file-based, stale GC 10 s, settle ~1200 ms) or `last-wins` — see `src/core/multi-session.ts` |
+| `multiSession.strategy` | `leader-election` (file-based, stale GC 10 s, settle ~1200 ms) or `last-wins` — see `src/core/session-tracker.ts` |
 
 Only the picked session pushes `SET_ACTIVITY` (single Discord IPC slot).
 
@@ -284,7 +284,7 @@ Every row traces to `ARCHITECTURE.md §5.1`. Count = **45**.
 
 ### `largeImageKey` / `largeImageText` / `smallImageKey` / `smallImageText`
 
-Lower-cased before send (`src/discord/assets.ts`). Accepts Art Asset key (1..32), `mp:` media-proxy id, or `https://` URL.
+Lower-cased before send (`src/discord/presence.ts`). Accepts Art Asset key (1..32), `mp:` media-proxy id, or `https://` URL.
 Text fields capped at 128 (historical `discord_rpc.h` limit — enforced by `assets.validate`).
 
 ```json
@@ -293,7 +293,7 @@ Text fields capped at 128 (historical `discord_rpc.h` limit — enforced by `ass
 
 ### `detailsTemplate` / `stateTemplate`
 
-Mustache-style vars expanded in `src/utils/format.ts` → `src/core/presence-model.ts`:
+Mustache-style vars expanded in `src/core/presence-model.ts`:
 
 - `detailsTemplate` vars: `{model}` `{provider}` `{project}` `{file}` `{elapsed}`
 - `stateTemplate` adds: `{cost}` `{tokens}` `{done}` `{total}` `{contextPercent}`
@@ -327,8 +327,8 @@ FSM transition `active/tool-running → idle` via `idle.timeout` event in `src/c
 
 ### `reconnect.*` + `throttle.*`
 
-`reconnect.*` consumed by `src/discord/client.ts`; `throttle.*` by the same client's
-debounce/throttle queue. See `ARCHITECTURE.md §6.2–6.3`.
+`reconnect.*` consumed by `src/discord/reconnect.ts`; `throttle.*` by
+`src/core/presence-scheduler.ts`. See `ARCHITECTURE.md §6.2–6.3`.
 
 | Option | Default | Effect | Example |
 |---|---|---|---|
@@ -344,7 +344,7 @@ debounce/throttle queue. See `ARCHITECTURE.md §6.2–6.3`.
 
 | Option | Effect | Example |
 |---|---|---|
-| `assets.validate` | When `true` (default), `src/discord/assets.ts` rejects invalid types/buttons/keys and `src/discord/client.ts` drops the update with `warn`. Set `false` to skip (not recommended). | `{ "assets": { "validate": false } }` |
+| `assets.validate` | When `true` (default), `src/discord/presence.ts` rejects invalid types/buttons/keys and `src/core/presence-scheduler.ts` drops the update with `warn`. Set `false` to skip (not recommended). | `{ "assets": { "validate": false } }` |
 | `buttons` | Array **replaces** on merge; max 2; `label` 1..32, `url` 1..512 `https://`. | `{ "buttons": [{ "label": "View Repo", "url": "https://github.com/…" }] }` |
 | `multiSession.strategy` | `leader-election` = file lock + stale GC; `last-wins` = newest `touch()` wins. | `{ "multiSession": { "strategy": "last-wins" } }` |
 | `sessionStats.*` | Toggle model/tokens/cost/elapsed independently (privacy still wins). | `{ "sessionStats": { "showCost": false } }` |
@@ -496,4 +496,4 @@ OPENCODE_DISCORD_DEBUG=1 opencode  # verbose logs
 
 ---
 
-*45 options. Schema: `src/config/schema.ts`. Loader: `src/config/loader.ts`. Presence rendering: `src/core/presence-model.ts` + `src/utils/format.ts`. Transport: `src/discord/client.ts` + `src/discord/transport.ts` + `src/discord/ipc.ts`.*
+*45 options. Schema: `src/config/schema.ts`. Loader: `src/config/loader.ts`. Presence rendering: `src/core/presence-model.ts`. Transport: `src/core/presence-scheduler.ts` + `src/discord/reconnect.ts` + `src/discord/transport.ts` + `src/discord/ipc.ts`.*
