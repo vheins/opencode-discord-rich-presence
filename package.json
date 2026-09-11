@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "opencode-discord-rich-presence",
+  "version": "0.1.0",
+  "description": "Discord Rich Presence plugin for opencode — session stats, cross-platform IPC, privacy controls.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "bun": ">=1.1.0",
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "bun test"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "discord",
+    "rich-presence",
+    "discord-rpc"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "zod": "^4.1.8"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.13",
+    "@opencode-ai/plugin": "^1.18.30",
+    "@opencode-ai/sdk": "^1.18.30",
+    "@types/bun": "^1.4.2",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    [
+      "../src/index.ts",
+      {
+        "applicationId": "000000000000000000",
+        "enabled": true,
+        "debug": false,
+        "largeImageKey": "opencode",
+        "largeImageText": "opencode",
+        "detailsTemplate": "Working with {model}",
+        "stateTemplate": "{cost} · {tokens} tokens",
+        "privacy": {
+          "hideProjectPath": false,
+          "hideModel": false,
+          "hideCost": false,
+          "hideFilePaths": true
+        },
+        "idle": {
+          "enabled": true,
+          "timeoutMs": 300000,
+          "details": "Idle — ready",
+          "state": "{cost} · {tokens} tokens"
+        },
+        "buttons": [
+          {
+            "label": "View on GitHub",
+            "url": "https://github.com/vheins/opencode-discord-rich-presence"
+          }
+        ]
+      }
+    ]
+  ]
+}

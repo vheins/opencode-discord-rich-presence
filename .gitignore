@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun-debug.log*
+
+# opencode runtime cache (plugins, node_modules, logs)
+.opencode/
+.cache/
+
+# Test / coverage artifacts
+coverage/
+*.lcov
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
