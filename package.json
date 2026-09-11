@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "opencode-discord-rich-presence",
+  "name": "@vheins/opencode-discord-rich-presence",
   "version": "0.1.0",
   "description": "Discord Rich Presence plugin for opencode — session stats, cross-platform IPC, privacy controls.",
   "type": "module",

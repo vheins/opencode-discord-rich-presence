@@ -36,7 +36,7 @@ The plugin requires no config — defaults are usable. Create either config laye
 ```json
 {
   "plugin": [
-    ["opencode-discord-rich-presence", { "debug": true, "privacy": { "hideFilePaths": true } }]
+    ["@vheins/opencode-discord-rich-presence", { "debug": true, "privacy": { "hideFilePaths": true } }]
   ]
 }
 ```
@@ -54,7 +54,7 @@ Env vars override files; runtime overrides env. See §2.
 | 1 (lowest) | Global file | `~/.config/opencode/discord-presence.json` (honours `OPENCODE_CONFIG_DIR`) |
 | 2 | Project file | `<projectRoot>/.discord-presence.json` or `perProject.filename` |
 | 3 | Env vars | `OPENCODE_DISCORD_*` / `DISCORD_*` (see §4 table) |
-| 4 (highest) | Runtime | `opencode.json` → `plugin: [["opencode-discord-rich-presence", { … }]]` tuple second element |
+| 4 (highest) | Runtime | `opencode.json` → `plugin: [["@vheins/opencode-discord-rich-presence", { … }]]` tuple second element |
 
 **Merge rule** — objects deep-merge, **arrays replace**, scalars replace.
 That means a higher layer's `buttons` replaces the lower layer's entirely (no concat).
@@ -83,7 +83,7 @@ Result: `idle.timeoutMs = 60000` (env wins), `privacy.hideCost = true` (env wins
 
 ```jsonc
 // opencode.json
-{ "plugin": [["opencode-discord-rich-presence", { "enabled": false }]] }
+{ "plugin": [["@vheins/opencode-discord-rich-presence", { "enabled": false }]] }
 ```
 
 ```bash

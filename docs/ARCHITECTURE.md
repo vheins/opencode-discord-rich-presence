@@ -311,7 +311,7 @@ Precedence (lowest → highest): **global file < project file < env var < runtim
 | Global file | `~/.config/opencode/discord-presence.json` (honours `OPENCODE_CONFIG_DIR`) |
 | Project file | `<projectRoot>/.discord-presence.json` (or `perProject.filename`) |
 | Env var | `OPENCODE_DISCORD_*` (see table) |
-| Runtime | `opencode.json` → `plugin: [["opencode-discord-rich-presence", { … }]]` (tuple second element) |
+| Runtime | `opencode.json` → `plugin: [["@vheins/opencode-discord-rich-presence", { … }]]` (tuple second element) |
 
 Deep merge: objects merge, arrays **replace** (so `buttons` from higher precedence wins), scalars replace.
 

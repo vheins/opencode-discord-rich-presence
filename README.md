@@ -1,7 +1,7 @@
 # opencode Discord Rich Presence
 
-[![npm version](https://img.shields.io/npm/v/opencode-discord-rich-presence.svg)](https://www.npmjs.com/package/opencode-discord-rich-presence)
-[![npm downloads](https://img.shields.io/npm/dm/opencode-discord-rich-presence.svg)](https://www.npmjs.com/package/opencode-discord-rich-presence)
+[![npm version](https://img.shields.io/npm/v/@vheins/opencode-discord-rich-presence.svg)](https://www.npmjs.com/package/@vheins/opencode-discord-rich-presence)
+[![npm downloads](https://img.shields.io/npm/dm/@vheins/opencode-discord-rich-presence.svg)](https://www.npmjs.com/package/@vheins/opencode-discord-rich-presence)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Discord RPC](https://img.shields.io/badge/Discord-Rich%20Presence-5865F2.svg)](https://discord.com/developers/docs/rich-presence/overview)
 
@@ -34,11 +34,11 @@ Six target feature groups — all represented in [`docs/ARCHITECTURE.md`](docs/A
 
 ## Install from npm
 
-Published on npm: <https://www.npmjs.com/package/opencode-discord-rich-presence>.
+Published on npm: <https://www.npmjs.com/package/@vheins/opencode-discord-rich-presence>.
 
 ```bash
-bun add opencode-discord-rich-presence
-# or: npm install opencode-discord-rich-presence
+bun add @vheins/opencode-discord-rich-presence
+# or: npm install @vheins/opencode-discord-rich-presence
 ```
 
 Then register it in your opencode config:
@@ -48,9 +48,9 @@ Then register it in your opencode config:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-discord-rich-presence",
+    "@vheins/opencode-discord-rich-presence",
     // with options (highest precedence — see Configuration):
-    ["opencode-discord-rich-presence", { "debug": true, "privacy": { "hideFilePaths": true } }]
+    ["@vheins/opencode-discord-rich-presence", { "debug": true, "privacy": { "hideFilePaths": true } }]
   ]
 }
 ```
@@ -87,8 +87,8 @@ If the plugin file imports npm packages, add a `package.json` inside the config 
 ### Option B — npm package via `opencode.json`
 
 ```bash
-bun add opencode-discord-rich-presence
-# or: npm install opencode-discord-rich-presence
+bun add @vheins/opencode-discord-rich-presence
+# or: npm install @vheins/opencode-discord-rich-presence
 ```
 
 Then register it in your opencode config:
@@ -98,9 +98,9 @@ Then register it in your opencode config:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-discord-rich-presence",
+    "@vheins/opencode-discord-rich-presence",
     // with options (highest precedence — see Configuration):
-    ["opencode-discord-rich-presence", { "debug": true, "privacy": { "hideFilePaths": true } }]
+    ["@vheins/opencode-discord-rich-presence", { "debug": true, "privacy": { "hideFilePaths": true } }]
   ]
 }
 ```

@@ -144,7 +144,7 @@ cat > opencode.json <<'JSON'
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    ["opencode-discord-rich-presence", { "debug": true }]
+    ["@vheins/opencode-discord-rich-presence", { "debug": true }]
   ]
 }
 JSON
@@ -205,7 +205,7 @@ Logs are fire-and-forget (`catch` and ignore) — logging never crashes the plug
 # verbose run
 OPENCODE_DISCORD_DEBUG=1 opencode
 # or runtime:
-# opencode.json → ["opencode-discord-rich-presence", { "debug": true }]
+# opencode.json → ["@vheins/opencode-discord-rich-presence", { "debug": true }]
 ```
 
 ### 5.2 Common failures
@@ -280,9 +280,9 @@ After publishing, users add the package to their opencode config:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-discord-rich-presence",
+    "@vheins/opencode-discord-rich-presence",
     // with options (optional — highest precedence):
-    ["opencode-discord-rich-presence", { "debug": false, "privacy": { "hideFilePaths": true } }]
+    ["@vheins/opencode-discord-rich-presence", { "debug": false, "privacy": { "hideFilePaths": true } }]
   ]
 }
 ```
@@ -292,7 +292,7 @@ On next `opencode` start, Bun installs the package into `~/.cache/opencode/node_
 Pinning a version:
 
 ```jsonc
-{ "plugin": ["opencode-discord-rich-presence@1.1.0"] }
+{ "plugin": ["@vheins/opencode-discord-rich-presence@1.1.0"] }
 ```
 
 ---
